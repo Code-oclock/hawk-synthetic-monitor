@@ -1,0 +1,54 @@
+version: "2"
+
+run:
+  timeout: 3m
+
+formatters:
+  enable:
+    - gofumpt
+    - gci
+  settings:
+    gofumpt:
+      extra:
+        group-params: true
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/Code-oclock/hawk-synthetic-monitor)
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - canonicalheader
+    - contextcheck
+    - copyloopvar
+    - errname
+    - errorlint
+    - gocritic
+    - godot
+    - gosec
+    - misspell
+    - nilerr
+    - nlreturn
+    - noctx
+    - nolintlint
+    - perfsprint
+    - testpackage
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - whitespace
+  settings:
+    nlreturn:
+      block-size: 3
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling

@@ -1,5 +1,4 @@
-// Package hawk — клиент к Hawk: отправка тестового события в collector
-// и поиск этого события через GraphQL API.
+// Package hawk sends test events to a Hawk collector and finds them through the GraphQL API.
 package hawk
 
 import (
@@ -7,20 +6,19 @@ import (
 	"fmt"
 )
 
-// ErrNotFound возвращается, если события с таким title нет среди последних событий проекта.
+// ErrNotFound means the project has no event with the requested title.
 var ErrNotFound = errors.New("hawk: event not found")
 
-// Event — событие проекта, как его отдаёт GraphQL API.
 type Event struct {
 	ID         string
 	Title      string
 	TotalCount int
 }
 
-// CollectorError — collector принял запрос, но отказал (неверный токен, лимит и т.п.).
+// CollectorError is returned when the collector rejects an event.
 type CollectorError struct {
-	Code    int    // код из ответа collector (совпадает с HTTP-статусом)
-	Message string // текст из поля message
+	Code    int
+	Message string
 }
 
 func (e *CollectorError) Error() string {

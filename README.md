@@ -1,15 +1,17 @@
 # hawk-synthetic-monitor
 
-Автономный сервис синтетического мониторинга [Hawk](https://hawk.so): раз в заданный интервал отправляет тестовое событие и проверяет, что оно прошло весь путь — collector → обработка → видно в проекте → уведомление.
+Synthetic monitoring for [Hawk](https://hawk.so): on a fixed interval it sends a test event and checks that it makes it through the whole pipeline — collector, processing, project view, notification.
 
-Тестовое задание клуба CodeX (Developer Infrastructure → Synthetic Monitoring).
+Test assignment for the CodeX club (Developer Infrastructure → Synthetic Monitoring). Work in progress.
 
-> Статус: в разработке. README будет дополнен архитектурой, запуском и описанием проверок.
+## Development
 
-## Запуск тестов
 ```
-go test -race ./...
+make check   # format check, lint, tests
+make fmt     # apply formatters (gofumpt, gci)
+make hooks   # enable the pre-commit hook
 ```
 
-## Для работы нужен
-Работающий экземпляр Hawk: collector, API и воркеры `default`, `grouper`, `notifier`, `webhook`. Локальный стенд собирается из [hawk.mono](https://github.com/codex-team/hawk.mono) (описание будет добавлено).
+## Requirements
+
+A running Hawk: collector, API and the `default`, `grouper`, `notifier` and `webhook` workers.

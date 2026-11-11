@@ -14,15 +14,15 @@ import (
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/hawk"
 )
 
-// fakeCollector имитирует collector Hawk: принимает POST и запоминает тело запроса.
-func fakeCollector(t *testing.T, status int, body string, got *map[string]any) *httptest.Server {
+func fakeCollector(t *testing.T, status int, body string, got map[string]any) *httptest.Server {
 	t.Helper()
+
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			t.Errorf("collector: метод %s, ожидался POST", r.Method)
+			t.Errorf("collector: method %s, want POST", r.Method)
 		}
 		if got != nil {
-			_ = json.NewDecoder(r.Body).Decode(got)
+			_ = json.NewDecoder(r.Body).Decode(&got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -30,9 +30,8 @@ func fakeCollector(t *testing.T, status int, body string, got *map[string]any) *
 	}))
 }
 
-// fakeAPI имитирует GraphQL API. Запрос login выдаёт токен, запрос событий
-// требует заголовок Authorization: Bearer tok-1 и отдаёт список titles.
-// eventsAfter — сколько запросов событий вернуть пустой список, прежде чем показать события.
+// fakeAPI serves login and events queries. The events query requires "Bearer tok-1"
+// and returns an empty list for the first eventsAfter calls.
 type fakeAPI struct {
 	srv         *httptest.Server
 	logins      atomic.Int32
@@ -44,6 +43,7 @@ type fakeAPI struct {
 
 func newFakeAPI(t *testing.T, titles ...string) *fakeAPI {
 	t.Helper()
+
 	f := &fakeAPI{titles: titles}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -51,32 +51,36 @@ func newFakeAPI(t *testing.T, titles ...string) *fakeAPI {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
+
 		switch {
 		case strings.Contains(req.Query, "login"):
 			f.logins.Add(1)
 			if f.loginError {
 				_, _ = w.Write([]byte(`{"errors":[{"message":"Wrong email or password"}],"data":null}`))
+
 				return
 			}
 			_, _ = w.Write([]byte(`{"data":{"login":{"accessToken":"tok-1"}}}`))
 		case strings.Contains(req.Query, "events"):
 			if r.Header.Get("Authorization") != "Bearer tok-1" {
-				_, _ = w.Write([]byte(`{"errors":[{"message":"You must be signed in","extensions":{"code":"UNAUTHENTICATED"}}],"data":null}`))
+				_, _ = w.Write([]byte(`{"errors":[{"message":"You must be signed in"}],"data":null}`))
+
 				return
 			}
-			n := f.eventCalls.Add(1)
+
 			evs := []string{}
-			if n > f.eventsAfter {
+			if f.eventCalls.Add(1) > f.eventsAfter {
 				for i, title := range f.titles {
 					evs = append(evs, `{"id":"id-`+string(rune('a'+i))+`","totalCount":1,"payload":{"title":"`+title+`"}}`)
 				}
 			}
 			_, _ = w.Write([]byte(`{"data":{"project":{"events":[` + strings.Join(evs, ",") + `]}}}`))
 		default:
-			t.Errorf("api: неожиданный запрос %q", req.Query)
+			t.Errorf("api: unexpected query %q", req.Query)
 		}
 	}))
 	t.Cleanup(f.srv.Close)
+
 	return f
 }
 
@@ -92,20 +96,19 @@ func newClient(collectorURL, apiURL string) *hawk.Client {
 }
 
 func TestSendEvent_OK(t *testing.T) {
-	var got map[string]any
-	srv := fakeCollector(t, 200, `{"code":200,"error":false,"message":"OK"}`, &got)
+	got := map[string]any{}
+	srv := fakeCollector(t, 200, `{"code":200,"error":false,"message":"OK"}`, got)
 	defer srv.Close()
 
-	c := newClient(srv.URL, "http://unused")
-	if err := c.SendEvent(context.Background(), "Synthetic check run-1"); err != nil {
+	if err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "Synthetic check run-1"); err != nil {
 		t.Fatalf("SendEvent: %v", err)
 	}
 
 	if got["token"] != "integration-token" {
-		t.Errorf("token = %v, ожидался integration-token", got["token"])
+		t.Errorf("token = %v, want integration-token", got["token"])
 	}
 	if ct, _ := got["catcherType"].(string); ct == "" {
-		t.Error("catcherType пустой: collector отвечает 400 CatcherType is empty")
+		t.Error("catcherType is empty: the collector answers 400 CatcherType is empty")
 	}
 	payload, _ := got["payload"].(map[string]any)
 	if payload["title"] != "Synthetic check run-1" {
@@ -121,7 +124,7 @@ func TestSendEvent_CollectorRejects(t *testing.T) {
 
 	var ce *hawk.CollectorError
 	if !errors.As(err, &ce) {
-		t.Fatalf("ожидался *CollectorError, получено %T: %v", err, err)
+		t.Fatalf("want *CollectorError, got %T: %v", err, err)
 	}
 	if ce.Code != 400 || !strings.Contains(ce.Message, "Integration token invalid") {
 		t.Errorf("CollectorError = %+v", ce)
@@ -129,7 +132,7 @@ func TestSendEvent_CollectorRejects(t *testing.T) {
 }
 
 func TestSendEvent_ContextCancelled(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 	}))
 	defer srv.Close()
@@ -139,30 +142,28 @@ func TestSendEvent_ContextCancelled(t *testing.T) {
 
 	err := newClient(srv.URL, "http://unused").SendEvent(ctx, "x")
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ожидался context.DeadlineExceeded, получено: %v", err)
+		t.Fatalf("want context.DeadlineExceeded, got: %v", err)
 	}
 }
 
 func TestFindEvent_FindsByExactTitle(t *testing.T) {
 	api := newFakeAPI(t, "other event", "Synthetic check run-2", "Synthetic check run-22")
-	c := newClient("http://unused", api.srv.URL)
 
-	ev, err := c.FindEvent(context.Background(), "Synthetic check run-2")
+	ev, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "Synthetic check run-2")
 	if err != nil {
 		t.Fatalf("FindEvent: %v", err)
 	}
 	if ev.ID != "id-b" || ev.Title != "Synthetic check run-2" {
-		t.Errorf("найдено не то событие: %+v (run-22 — другое событие, сравнивать надо точно)", ev)
+		t.Errorf("wrong event: %+v (run-22 is a different event, titles must match exactly)", ev)
 	}
 }
 
 func TestFindEvent_NotFound(t *testing.T) {
 	api := newFakeAPI(t, "other event")
-	c := newClient("http://unused", api.srv.URL)
 
-	_, err := c.FindEvent(context.Background(), "missing")
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "missing")
 	if !errors.Is(err, hawk.ErrNotFound) {
-		t.Fatalf("ожидался ErrNotFound, получено: %v", err)
+		t.Fatalf("want ErrNotFound, got: %v", err)
 	}
 }
 
@@ -170,39 +171,37 @@ func TestFindEvent_LoginOnce(t *testing.T) {
 	api := newFakeAPI(t, "a")
 	c := newClient("http://unused", api.srv.URL)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := c.FindEvent(context.Background(), "a"); err != nil {
 			t.Fatalf("FindEvent #%d: %v", i, err)
 		}
 	}
 	if n := api.logins.Load(); n != 1 {
-		t.Errorf("login вызван %d раз, ожидался 1 (токен надо запомнить)", n)
+		t.Errorf("login called %d times, want 1 (the token must be reused)", n)
 	}
 }
 
 func TestFindEvent_LoginFails(t *testing.T) {
 	api := newFakeAPI(t, "a")
 	api.loginError = true
-	c := newClient("http://unused", api.srv.URL)
 
-	_, err := c.FindEvent(context.Background(), "a")
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "a")
 	if err == nil || !strings.Contains(err.Error(), "Wrong email or password") {
-		t.Fatalf("ошибка GraphQL должна попасть в err вместе с текстом, получено: %v", err)
+		t.Fatalf("the GraphQL error text must be part of err, got: %v", err)
 	}
 	if errors.Is(err, hawk.ErrNotFound) {
-		t.Error("ошибка входа не должна выглядеть как «событие не найдено»")
+		t.Error("a login failure must not look like a missing event")
 	}
 }
 
 func TestWaitForEvent_AppearsLater(t *testing.T) {
 	api := newFakeAPI(t, "Synthetic check run-3")
-	api.eventsAfter = 2 // первые два опроса пустые
-	c := newClient("http://unused", api.srv.URL)
+	api.eventsAfter = 2
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	ev, err := c.WaitForEvent(ctx, "Synthetic check run-3", 5*time.Millisecond)
+	ev, err := newClient("http://unused", api.srv.URL).WaitForEvent(ctx, "Synthetic check run-3", 5*time.Millisecond)
 	if err != nil {
 		t.Fatalf("WaitForEvent: %v", err)
 	}
@@ -210,41 +209,39 @@ func TestWaitForEvent_AppearsLater(t *testing.T) {
 		t.Errorf("ev = %+v", ev)
 	}
 	if n := api.eventCalls.Load(); n != 3 {
-		t.Errorf("запросов событий %d, ожидалось 3 (2 пустых + 1 успешный)", n)
+		t.Errorf("events queried %d times, want 3 (two empty, one hit)", n)
 	}
 }
 
 func TestWaitForEvent_Timeout(t *testing.T) {
-	api := newFakeAPI(t) // событий нет вообще
-	c := newClient("http://unused", api.srv.URL)
+	api := newFakeAPI(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
-	_, err := c.WaitForEvent(ctx, "never", 10*time.Millisecond)
+	_, err := newClient("http://unused", api.srv.URL).WaitForEvent(ctx, "never", 10*time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ожидался context.DeadlineExceeded, получено: %v", err)
+		t.Fatalf("want context.DeadlineExceeded, got: %v", err)
 	}
 	if d := time.Since(start); d > 500*time.Millisecond {
-		t.Errorf("WaitForEvent завис на %v после таймаута", d)
+		t.Errorf("WaitForEvent hung for %v after the timeout", d)
 	}
 }
 
 func TestWaitForEvent_LoginErrorStopsImmediately(t *testing.T) {
 	api := newFakeAPI(t, "a")
 	api.loginError = true
-	c := newClient("http://unused", api.srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	start := time.Now()
-	_, err := c.WaitForEvent(ctx, "a", 10*time.Millisecond)
+	_, err := newClient("http://unused", api.srv.URL).WaitForEvent(ctx, "a", 10*time.Millisecond)
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ошибка входа должна вернуться сразу, а не ждать таймаута: %v", err)
+		t.Fatalf("a login failure must be returned at once, not after the timeout: %v", err)
 	}
 	if time.Since(start) > 500*time.Millisecond {
-		t.Error("ошибку входа нельзя повторять до таймаута — это не «событие ещё не появилось»")
+		t.Error("a login failure must not be retried until the timeout")
 	}
 }
