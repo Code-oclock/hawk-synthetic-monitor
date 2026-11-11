@@ -1,10 +1,16 @@
 package hawk
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
+
+const defaultTimeout = 10 * time.Second
 
 type Config struct {
 	CollectorURL     string
@@ -16,24 +22,47 @@ type Config struct {
 	HTTPClient       *http.Client
 }
 
-type Client struct{}
+type Client struct {
+	cfg  Config
+	http *http.Client
+
+	mu    sync.Mutex
+	token string
+}
 
 func New(cfg Config) *Client {
-	panic("not implemented")
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: defaultTimeout}
+	}
+
+	return &Client{cfg: cfg, http: httpClient}
 }
 
-// SendEvent posts a test event to the collector. A rejection is returned as *CollectorError.
-func (c *Client) SendEvent(ctx context.Context, title string) error {
-	panic("not implemented")
-}
+// postJSON sends body as JSON and decodes the response into out, whatever the status code is.
+func (c *Client) postJSON(ctx context.Context, url string, body any, bearer string, out any) (int, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return 0, fmt.Errorf("encode request: %w", err)
+	}
 
-// FindEvent looks for an event with exactly this title among the latest events of the project.
-func (c *Client) FindEvent(ctx context.Context, title string) (*Event, error) {
-	panic("not implemented")
-}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 
-// WaitForEvent polls FindEvent every interval until the event appears or ctx ends.
-// Any error other than ErrNotFound is returned immediately.
-func (c *Client) WaitForEvent(ctx context.Context, title string, interval time.Duration) (*Event, error) {
-	panic("not implemented")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	// A non-JSON body (a proxy error page, for example) leaves out empty; the caller checks the status.
+	_ = json.NewDecoder(resp.Body).Decode(out)
+
+	return resp.StatusCode, nil
 }
