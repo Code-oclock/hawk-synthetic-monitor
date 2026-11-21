@@ -206,6 +206,11 @@ func (c *Check) waitVisible(ctx context.Context, title string, sentAt time.Time,
 		}
 	}
 
+	// Out of time while polling: report a timeout, keep the last poll error as detail.
+	if err != nil && stageCtx.Err() != nil && (errors.Is(err, ErrNotFound) || errors.Is(err, ErrTransient)) {
+		err = fmt.Errorf("%w: last poll: %w", stageCtx.Err(), err)
+	}
+
 	result := c.finish(entity.StageVisible, started, attempts, err)
 	if result.Status == entity.StatusPassed {
 		latency := result.FinishedAt.Sub(sentAt)
