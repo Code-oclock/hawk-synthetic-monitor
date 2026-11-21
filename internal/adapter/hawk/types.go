@@ -1,4 +1,3 @@
-// Package hawk sends test events to a Hawk collector and finds them through the GraphQL API.
 package hawk
 
 import (
@@ -6,14 +5,8 @@ import (
 	"fmt"
 )
 
-// ErrNotFound means the project has no event with the requested title.
-var ErrNotFound = errors.New("hawk: event not found")
-
-type Event struct {
-	ID         string
-	Title      string
-	TotalCount int
-}
+// ErrProtocol indicates a protocol violation from the Hawk service.
+var ErrProtocol = errors.New("hawk: protocol error")
 
 // CollectorError is returned when the collector rejects an event.
 type CollectorError struct {

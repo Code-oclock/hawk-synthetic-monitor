@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
 const codeUnauthenticated = "UNAUTHENTICATED"
@@ -25,9 +27,18 @@ func isUnauthenticated(err error) bool {
 	return errors.As(err, &gqlErr) && gqlErr.code == codeUnauthenticated
 }
 
-// query runs a GraphQL query. Hawk reports errors with HTTP 200 and an "errors" field.
+// query runs a GraphQL query.
 func (c *Client) query(ctx context.Context, query string, vars map[string]any, bearer string, out any) error {
 	body := map[string]any{"query": query, "variables": vars}
+
+	status, respBody, err := c.postJSON(ctx, c.cfg.APIURL, body, bearer)
+	if err != nil {
+		return err
+	}
+
+	if status == http.StatusTooManyRequests || (status >= 500 && status <= 599) {
+		return fmt.Errorf("%w: graphql status %d", usecase.ErrTransient, status)
+	}
 
 	var resp struct {
 		Data   json.RawMessage `json:"data"`
@@ -38,9 +49,8 @@ func (c *Client) query(ctx context.Context, query string, vars map[string]any, b
 			} `json:"extensions"`
 		} `json:"errors"`
 	}
-	status, err := c.postJSON(ctx, c.cfg.APIURL, body, bearer, &resp)
-	if err != nil {
-		return err
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return fmt.Errorf("%w: graphql response not json: %w", ErrProtocol, err)
 	}
 
 	if len(resp.Errors) > 0 {
@@ -52,7 +62,13 @@ func (c *Client) query(ctx context.Context, query string, vars map[string]any, b
 		return fmt.Errorf("graphql: unexpected status %d", status)
 	}
 
-	return json.Unmarshal(resp.Data, out)
+	if out != nil && len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, out); err != nil {
+			return fmt.Errorf("%w: decode graphql data: %w", ErrProtocol, err)
+		}
+	}
+
+	return nil
 }
 
 // accessToken logs in on first use and reuses the token afterwards.
@@ -65,7 +81,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	}
 
 	var out struct {
-		Login struct {
+		Login *struct {
 			AccessToken string `json:"accessToken"`
 		} `json:"login"`
 	}
@@ -75,6 +91,10 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	vars := map[string]any{"email": c.cfg.Email, "password": c.cfg.Password}
 	if err := c.query(ctx, mutation, vars, "", &out); err != nil {
 		return "", fmt.Errorf("login: %w", err)
+	}
+
+	if out.Login == nil || out.Login.AccessToken == "" {
+		return "", fmt.Errorf("%w: missing access token in login response", ErrProtocol)
 	}
 
 	c.token = out.Login.AccessToken

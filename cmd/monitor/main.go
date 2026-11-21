@@ -3,11 +3,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
 func main() {
@@ -38,8 +40,20 @@ func run() error {
 	}
 	sent := time.Since(start)
 
-	if _, err := client.WaitForEvent(ctx, title, 250*time.Millisecond); err != nil {
-		return err
+	for {
+		_, err := client.FindEvent(ctx, title)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, usecase.ErrNotFound) {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 
 	fmt.Printf("sent in %v, visible after %v\n", sent, time.Since(start)-sent)

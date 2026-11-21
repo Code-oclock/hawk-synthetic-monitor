@@ -2,57 +2,47 @@ package hawk
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
+
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/entity"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
 type eventNode struct {
-	ID         string `json:"id"`
-	TotalCount int    `json:"totalCount"`
-	Payload    struct {
+	ID          string `json:"id"`
+	TotalCount  int    `json:"totalCount"`
+	CatcherType string `json:"catcherType"`
+	Payload     struct {
 		Title string `json:"title"`
+		Type  string `json:"type"`
 	} `json:"payload"`
 }
 
 // FindEvent looks for an event with exactly this title among the latest events of the project.
-func (c *Client) FindEvent(ctx context.Context, title string) (*Event, error) {
+func (c *Client) FindEvent(ctx context.Context, title string) (entity.Event, error) {
 	nodes, err := c.latestEvents(ctx)
 	if err != nil {
-		return nil, err
+		return entity.Event{}, err
 	}
 
 	for _, node := range nodes {
 		if node.Payload.Title == title {
-			return &Event{ID: node.ID, Title: node.Payload.Title, TotalCount: node.TotalCount}, nil
+			if node.ID == "" {
+				return entity.Event{}, fmt.Errorf("%w: event has empty id", ErrProtocol)
+			}
+
+			return entity.Event{
+				ProjectID:   c.cfg.ProjectID,
+				ID:          node.ID,
+				Title:       node.Payload.Title,
+				CatcherType: node.CatcherType,
+				Type:        node.Payload.Type,
+				TotalCount:  node.TotalCount,
+			}, nil
 		}
 	}
 
-	return nil, ErrNotFound
-}
-
-// WaitForEvent polls FindEvent every interval until the event appears or ctx ends.
-// Any error other than ErrNotFound is returned immediately.
-func (c *Client) WaitForEvent(ctx context.Context, title string, interval time.Duration) (*Event, error) {
-	if interval <= 0 {
-		return nil, errors.New("hawk: poll interval must be positive")
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		event, err := c.FindEvent(ctx, title)
-		if !errors.Is(err, ErrNotFound) {
-			return event, err
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("wait for event %q: %w", title, ctx.Err())
-		case <-ticker.C:
-		}
-	}
+	return entity.Event{}, usecase.ErrNotFound
 }
 
 // latestEvents retries once with a fresh login: access tokens live only 15 minutes.
@@ -76,15 +66,19 @@ func (c *Client) latestEvents(ctx context.Context) ([]eventNode, error) {
 
 func (c *Client) fetchEvents(ctx context.Context, token string) ([]eventNode, error) {
 	var out struct {
-		Project struct {
+		Project *struct {
 			Events []eventNode `json:"events"`
 		} `json:"project"`
 	}
 	const q = `query($projectId: ID!) {
-		project(projectId: $projectId) { events(limit: 20) { id totalCount payload { title } } }
+		project(projectId: $projectId) { events(limit: 20) { id totalCount catcherType payload { title type } } }
 	}`
 	if err := c.query(ctx, q, map[string]any{"projectId": c.cfg.ProjectID}, token, &out); err != nil {
 		return nil, fmt.Errorf("fetch events: %w", err)
+	}
+
+	if out.Project == nil {
+		return nil, fmt.Errorf("%w: project not found", ErrProtocol)
 	}
 
 	return out.Project.Events, nil
