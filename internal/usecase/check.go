@@ -31,6 +31,9 @@ type Check struct {
 
 	mu   sync.Mutex
 	busy bool
+	// recoveryDue is true while a failure was seen and no recovery alert has been delivered yet.
+	recoveryDue bool
+	stateLoaded bool
 }
 
 func NewCheck(deps Deps, opts Options) *Check {
@@ -52,13 +55,13 @@ func (c *Check) Run(ctx context.Context, trigger entity.Trigger) (entity.RunResu
 	runCtx, cancel := context.WithTimeout(ctx, c.opts.RunTimeout)
 	defer cancel()
 
-	previous := c.previousStatus(ctx)
+	c.loadState(ctx)
 	run := c.execute(runCtx, trigger)
 	if ctx.Err() != nil {
 		run.Status = entity.StatusCanceled
 	}
 
-	c.report(ctx, &run, previous)
+	c.report(ctx, &run)
 
 	return run, nil
 }
@@ -81,13 +84,28 @@ func (c *Check) release() {
 	c.mu.Unlock()
 }
 
-func (c *Check) previousStatus(ctx context.Context) entity.Status {
-	last, err := c.deps.Repo.Latest(ctx)
-	if err != nil || last == nil {
-		return ""
+// loadState seeds the recovery flag from the stored history on the first run after a start.
+func (c *Check) loadState(ctx context.Context) {
+	c.mu.Lock()
+	loaded := c.stateLoaded
+	c.stateLoaded = true
+	c.mu.Unlock()
+
+	if loaded {
+		return
 	}
 
-	return last.Status
+	readCtx, cancel := context.WithTimeout(ctx, c.opts.ReportingTimeout)
+	defer cancel()
+
+	last, err := c.deps.Repo.Latest(readCtx)
+	if err != nil || last == nil {
+		return
+	}
+
+	c.mu.Lock()
+	c.recoveryDue = last.Status == entity.StatusFailed
+	c.mu.Unlock()
 }
 
 func (c *Check) execute(ctx context.Context, trigger entity.Trigger) (run entity.RunResult) {
@@ -122,6 +140,20 @@ func (c *Check) execute(ctx context.Context, trigger entity.Trigger) (run entity
 		defer waiter.Close()
 	}
 
+	if subscribeErr != nil || waiter == nil {
+		if subscribeErr == nil {
+			subscribeErr = errNoWaiter
+		}
+		started := c.deps.Clock.Now()
+		failed := c.finish(entity.StageSend, started, 0, fmt.Errorf("monitor internal error, subscribe: %w", subscribeErr))
+		failed.Failure.Code = "internal"
+		run.Status = entity.StatusFailed
+		run.Stages = append(run.Stages, failed,
+			skipped(entity.StageVisible, "send not attempted"), skipped(entity.StageWebhook, "send not attempted"))
+
+		return run
+	}
+
 	send := c.retry(ctx, entity.StageSend, c.opts.SendTimeout, func(ctx context.Context) error {
 		return c.deps.Hawk.SendEvent(ctx, title)
 	})
@@ -133,7 +165,8 @@ func (c *Check) execute(ctx context.Context, trigger entity.Trigger) (run entity
 		return run
 	}
 
-	sentAt := *send.FinishedAt
+	// Deadlines and latencies count from the start of sending: a webhook may arrive before the collector answers.
+	sentAt := *send.StartedAt
 	var (
 		visible, webhook entity.StageResult
 		wg               sync.WaitGroup
@@ -147,7 +180,7 @@ func (c *Check) execute(ctx context.Context, trigger entity.Trigger) (run entity
 	go func() {
 		defer wg.Done()
 
-		webhook = c.waitWebhook(ctx, waiter, subscribeErr, sentAt, &run)
+		webhook = c.waitWebhook(ctx, waiter, sentAt, &run)
 	}()
 	wg.Wait()
 
@@ -177,7 +210,12 @@ func (c *Check) retry(ctx context.Context, stage entity.Stage, timeout time.Dura
 		if err = fn(stageCtx); err == nil || !errors.Is(err, ErrTransient) {
 			break
 		}
+		if attempts >= c.opts.MaxAttempts {
+			break
+		}
 		if !sleep(stageCtx, c.opts.RetryBackoff) {
+			err = fmt.Errorf("%w: last attempt: %w", stageCtx.Err(), err)
+
 			break
 		}
 	}
@@ -222,16 +260,9 @@ func (c *Check) waitVisible(ctx context.Context, title string, sentAt time.Time,
 }
 
 func (c *Check) waitWebhook(
-	ctx context.Context, waiter DeliveryWaiter, subscribeErr error, sentAt time.Time, run *entity.RunResult,
+	ctx context.Context, waiter DeliveryWaiter, sentAt time.Time, run *entity.RunResult,
 ) entity.StageResult {
 	started := c.deps.Clock.Now()
-	if subscribeErr != nil || waiter == nil {
-		if subscribeErr == nil {
-			subscribeErr = errNoWaiter
-		}
-
-		return c.finish(entity.StageWebhook, started, 0, fmt.Errorf("subscribe: %w", subscribeErr))
-	}
 
 	stageCtx, cancel := context.WithDeadline(ctx, sentAt.Add(c.opts.WebhookTimeout))
 	defer cancel()
@@ -302,28 +333,64 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // report stores the result and sends alerts with their own bounded contexts, so a canceled run still reports.
-func (c *Check) report(ctx context.Context, run *entity.RunResult, previous entity.Status) {
-	repCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.opts.ReportingTimeout)
-	defer cancel()
+func (c *Check) report(ctx context.Context, run *entity.RunResult) {
+	base := context.WithoutCancel(ctx)
 
 	if run.Status == entity.StatusPassed && c.opts.CleanupEnabled && c.deps.Cleaner != nil && run.Event != nil {
-		run.Cleanup = c.cleanup(repCtx, *run.Event)
+		cleanCtx, cancel := context.WithTimeout(base, c.opts.ReportingTimeout)
+		run.Cleanup = c.cleanup(cleanCtx, *run.Event)
+		cancel()
 	}
 
-	if alert, ok := alertFor(run, previous); ok && c.deps.Notifier != nil {
+	if alert, ok := c.nextAlert(run); ok && c.deps.Notifier != nil {
+		notifyCtx, cancel := context.WithTimeout(base, c.opts.ReportingTimeout)
+		err := c.deps.Notifier.Notify(notifyCtx, alert)
+		cancel()
+
 		run.Notification = entity.ActionResult{Status: entity.StatusPassed}
-		if err := c.deps.Notifier.Notify(repCtx, alert); err != nil {
+		if err != nil {
 			run.Notification = entity.ActionResult{Status: entity.StatusFailed, Failure: classify(err)}
 			run.ReportingErrors = append(run.ReportingErrors, *classify(fmt.Errorf("notify: %w", err)))
+		} else if alert.Kind == entity.AlertRecovery {
+			c.setRecoveryDue(false)
 		}
 	}
 
-	if err := c.deps.Repo.Save(repCtx, *run); err != nil {
+	saveCtx, cancel := context.WithTimeout(base, c.opts.ReportingTimeout)
+	defer cancel()
+
+	if err := c.deps.Repo.Save(saveCtx, *run); err != nil {
 		run.ReportingErrors = append(run.ReportingErrors, *classify(fmt.Errorf("save: %w", err)))
 	}
 	if c.deps.Observer != nil {
 		c.deps.Observer.Observe(*run)
 	}
+}
+
+// nextAlert decides what to tell the chat. A recovery alert stays due until one is delivered.
+func (c *Check) nextAlert(run *entity.RunResult) (entity.Alert, bool) {
+	switch run.Status {
+	case entity.StatusFailed:
+		c.setRecoveryDue(true)
+
+		return entity.Alert{Kind: entity.AlertFailure, Result: *run}, true
+	case entity.StatusPassed:
+		c.mu.Lock()
+		due := c.recoveryDue
+		c.mu.Unlock()
+
+		if due {
+			return entity.Alert{Kind: entity.AlertRecovery, Result: *run}, true
+		}
+	}
+
+	return entity.Alert{}, false
+}
+
+func (c *Check) setRecoveryDue(due bool) {
+	c.mu.Lock()
+	c.recoveryDue = due
+	c.mu.Unlock()
 }
 
 func (c *Check) cleanup(ctx context.Context, event entity.Event) entity.ActionResult {
@@ -332,15 +399,4 @@ func (c *Check) cleanup(ctx context.Context, event entity.Event) entity.ActionRe
 	}
 
 	return entity.ActionResult{Status: entity.StatusPassed}
-}
-
-func alertFor(run *entity.RunResult, previous entity.Status) (entity.Alert, bool) {
-	switch {
-	case run.Status == entity.StatusFailed:
-		return entity.Alert{Kind: entity.AlertFailure, Result: *run}, true
-	case run.Status == entity.StatusPassed && previous == entity.StatusFailed:
-		return entity.Alert{Kind: entity.AlertRecovery, Result: *run}, true
-	default:
-		return entity.Alert{}, false
-	}
 }

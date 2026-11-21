@@ -11,7 +11,7 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-host.docker.internal,localhost}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
       - "8085:8085"
     volumes:
       - monitor-data:/data

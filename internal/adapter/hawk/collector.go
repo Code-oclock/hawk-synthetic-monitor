@@ -10,6 +10,11 @@ import (
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
+const (
+	catcherType = "errors/golang"
+	eventType   = "error"
+)
+
 type collectorRequest struct {
 	Token       string       `json:"token"`
 	CatcherType string       `json:"catcherType"`
@@ -38,10 +43,10 @@ type collectorResponse struct {
 func (c *Client) SendEvent(ctx context.Context, title string) error {
 	req := collectorRequest{
 		Token:       c.cfg.IntegrationToken,
-		CatcherType: "errors/golang",
+		CatcherType: catcherType,
 		Payload: eventPayload{
 			Title:     title,
-			Type:      "error",
+			Type:      eventType,
 			Backtrace: []backtraceFrame{{File: "main.go", Line: 1, Function: "main"}},
 		},
 	}

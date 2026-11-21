@@ -35,7 +35,7 @@ func TestFindEvent_LogsInAgainWhenTokenExpired(t *testing.T) {
 
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":{"project":{"events":[{"id":"e1","totalCount":1,"payload":{"title":"a"}}]}}}`))
+		_, _ = w.Write([]byte(`{"data":{"project":{"events":[{"id":"e1","totalCount":1,"catcherType":"errors/golang","payload":{"title":"a","type":"error"}}]}}}`))
 	}))
 	defer srv.Close()
 

@@ -45,6 +45,7 @@ if [ -n "$PID" ]; then
   EMAIL=$(envget HAWK_EMAIL)
   TOKEN=$(gql - "{\"query\":\"mutation(\$e:String!,\$p:String!){login(email:\$e,password:\$p){accessToken}}\",\"variables\":{\"e\":\"$EMAIL\",\"p\":\"$PASS\"}}" | field 'd["data"]["login"]["accessToken"]')
 else
+  [ -s "$OUT" ] && die "$OUT exists but has no HAWK_PROJECT_ID: refusing to overwrite it (move it away or add the missing values)"
   log "creating user $EMAIL (needs the API in NODE_ENV=e2e: signUp returns the password)"
   R=$(gql - "{\"query\":\"mutation(\$e:String!){signUp(email:\$e)}\",\"variables\":{\"e\":\"$EMAIL\"}}")
   PASS=$(echo "$R" | field 'd["data"]["signUp"]') || die "signUp failed (user exists already? delete it or set EMAIL): $R"
@@ -54,6 +55,7 @@ else
   PID=$(echo "$PR" | field 'd["data"]["createProject"]["id"]')
   ITOKEN=$(echo "$PR" | field 'd["data"]["createProject"]["token"]')
   umask 077
+  : > "$OUT" && chmod 600 "$OUT"
   { echo "HAWK_COLLECTOR_URL=$ENV_COLLECTOR"; echo "HAWK_API_URL=$ENV_API"
     echo "HAWK_PROJECT_ID=$PID"; echo "HAWK_INTEGRATION_TOKEN=$ITOKEN"
     echo "HAWK_EMAIL=$EMAIL"; echo "HAWK_PASSWORD=$PASS"; } > "$OUT"

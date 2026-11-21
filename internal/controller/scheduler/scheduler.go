@@ -24,6 +24,12 @@ func Run(ctx context.Context, runner Runner, interval time.Duration, log *slog.L
 	for {
 		runOnce(ctx, runner, log)
 
+		// A run longer than the interval leaves a stale tick behind: drop it instead of starting at once.
+		select {
+		case <-ticker.C:
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
 			return
@@ -43,6 +49,10 @@ func runOnce(ctx context.Context, runner Runner, log *slog.Logger) {
 		log.Error("scheduled run failed to start", "error", err)
 
 		return
+	}
+
+	for _, failure := range result.ReportingErrors {
+		log.Warn("reporting problem", "code", failure.Code, "message", failure.Message)
 	}
 
 	log.Info("check finished", "run", result.ID, "status", result.Status, "duration", result.Duration.Round(time.Millisecond))

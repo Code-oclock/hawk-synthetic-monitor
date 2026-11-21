@@ -34,6 +34,10 @@ func (c *Client) FindEvent(ctx context.Context, title string) (entity.Event, err
 				return entity.Event{}, fmt.Errorf("%w: event has empty id", ErrProtocol)
 			}
 
+			if node.CatcherType != catcherType || node.Payload.Type != eventType {
+				return entity.Event{}, fmt.Errorf("%w: event has catcherType %q and type %q", ErrProtocol, node.CatcherType, node.Payload.Type)
+			}
+
 			return entity.Event{
 				ProjectID:   c.cfg.ProjectID,
 				ID:          node.ID,
