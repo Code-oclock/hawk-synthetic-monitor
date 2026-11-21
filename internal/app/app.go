@@ -53,16 +53,19 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	observer := metrics.New(registry)
 	inbox := webhook.NewInbox(nil)
 
+	hawkClient := hawk.New(hawk.Config{
+		CollectorURL:     cfg.CollectorURL,
+		APIURL:           cfg.APIURL,
+		HealthURL:        cfg.HealthURL,
+		IntegrationToken: cfg.IntegrationToken,
+		ProjectID:        cfg.ProjectID,
+		Email:            cfg.Email,
+		Password:         cfg.Password,
+	})
+
 	deps := usecase.Deps{
-		Hawk: hawk.New(hawk.Config{
-			CollectorURL:     cfg.CollectorURL,
-			APIURL:           cfg.APIURL,
-			HealthURL:        cfg.HealthURL,
-			IntegrationToken: cfg.IntegrationToken,
-			ProjectID:        cfg.ProjectID,
-			Email:            cfg.Email,
-			Password:         cfg.Password,
-		}),
+		Hawk:     hawkClient,
+		Cleaner:  hawkClient,
 		Inbox:    inbox,
 		Repo:     repo,
 		Observer: observer,

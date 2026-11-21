@@ -2,11 +2,14 @@ package hawk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/entity"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
+
+var _ usecase.Cleaner = (*Client)(nil)
 
 type eventNode struct {
 	ID          string `json:"id"`
@@ -45,22 +48,76 @@ func (c *Client) FindEvent(ctx context.Context, title string) (entity.Event, err
 	return entity.Event{}, usecase.ErrNotFound
 }
 
+// RemoveEvent deletes the event group through the GraphQL API. It needs a project admin.
+func (c *Client) RemoveEvent(ctx context.Context, event entity.Event) error {
+	if event.ID == "" {
+		return errors.New("empty event id")
+	}
+
+	projectID := event.ProjectID
+	if projectID == "" {
+		projectID = c.cfg.ProjectID
+	}
+
+	return c.withToken(ctx, func(token string) error {
+		return c.removeEvent(ctx, projectID, event.ID, token)
+	})
+}
+
+func (c *Client) removeEvent(ctx context.Context, projectID, eventID, token string) error {
+	var out struct {
+		RemoveEvent *bool `json:"removeEvent"`
+	}
+	const mutation = `mutation($projectId: ID!, $eventId: ID!) { removeEvent(projectId: $projectId, eventId: $eventId) }`
+	vars := map[string]any{
+		"projectId": projectID,
+		"eventId":   eventID,
+	}
+	if err := c.query(ctx, mutation, vars, token, &out); err != nil {
+		return fmt.Errorf("remove event: %w", err)
+	}
+
+	if out.RemoveEvent == nil {
+		return fmt.Errorf("%w: missing removeEvent in response", ErrProtocol)
+	}
+	if !*out.RemoveEvent {
+		return fmt.Errorf("%w: remove event returned false", ErrProtocol)
+	}
+
+	return nil
+}
+
 // latestEvents retries once with a fresh login: access tokens live only 15 minutes.
 func (c *Client) latestEvents(ctx context.Context) ([]eventNode, error) {
+	var nodes []eventNode
+	err := c.withToken(ctx, func(token string) error {
+		var err error
+		nodes, err = c.fetchEvents(ctx, token)
+
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return nodes, nil
+}
+
+func (c *Client) withToken(ctx context.Context, fn func(token string) error) error {
 	for attempt := 0; ; attempt++ {
 		token, err := c.accessToken(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		nodes, err := c.fetchEvents(ctx, token)
+		err = fn(token)
 		if attempt == 0 && isUnauthenticated(err) {
 			c.dropToken(token)
 
 			continue
 		}
 
-		return nodes, err
+		return err
 	}
 }
 

@@ -3,14 +3,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/monitor ./cmd/monitor
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/monitor ./cmd/monitor \
+    && mkdir /out/data
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata \
-    && adduser -D -u 10001 monitor \
-    && mkdir /data && chown monitor /data
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/monitor /usr/local/bin/monitor
-USER monitor
+COPY --from=build --chown=10001:10001 /out/data /data
+USER 10001:10001
 ENV MONITOR_DB_PATH=/data/monitor.db
 VOLUME /data
 EXPOSE 8080 8085
