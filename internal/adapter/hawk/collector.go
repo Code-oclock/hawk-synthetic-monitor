@@ -1,9 +1,13 @@
 package hawk
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
 type collectorRequest struct {
@@ -26,11 +30,11 @@ type backtraceFrame struct {
 
 type collectorResponse struct {
 	Code    int    `json:"code"`
-	Error   bool   `json:"error"`
+	Error   *bool  `json:"error"`
 	Message string `json:"message"`
 }
 
-// SendEvent posts a test event to the collector. A rejection is returned as *CollectorError.
+// SendEvent posts a test event to the collector.
 func (c *Client) SendEvent(ctx context.Context, title string) error {
 	req := collectorRequest{
 		Token:       c.cfg.IntegrationToken,
@@ -42,22 +46,56 @@ func (c *Client) SendEvent(ctx context.Context, title string) error {
 		},
 	}
 
-	var resp collectorResponse
-	status, err := c.postJSON(ctx, c.cfg.CollectorURL, req, "", &resp)
+	status, body, err := c.postJSON(ctx, c.cfg.CollectorURL, req, "")
 	if err != nil {
-		return fmt.Errorf("send event: %w", err)
+		return err
 	}
 
-	if status == http.StatusOK && !resp.Error {
-		return nil
+	if status == http.StatusOK {
+		if bytes.Equal(bytes.TrimSpace(body), []byte("null")) {
+			return fmt.Errorf("%w: collector response is null", ErrProtocol)
+		}
+
+		var resp collectorResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return fmt.Errorf("%w: collector response not json: %w", ErrProtocol, err)
+		}
+
+		if resp.Error == nil {
+			return fmt.Errorf("%w: collector response missing error field", ErrProtocol)
+		}
+
+		if !*resp.Error {
+			return nil
+		}
+
+		rejection := &CollectorError{Code: resp.Code, Message: resp.Message}
+		if rejection.Code == 0 {
+			rejection.Code = http.StatusOK
+		}
+		if rejection.Message == "" {
+			rejection.Message = http.StatusText(http.StatusOK)
+		}
+
+		return rejection
 	}
 
-	rejection := &CollectorError{Code: resp.Code, Message: resp.Message}
-	if rejection.Code == 0 {
-		rejection.Code = status
+	var resp collectorResponse
+	var rejection *CollectorError
+	if err := json.Unmarshal(body, &resp); err == nil && (resp.Code != 0 || resp.Message != "") {
+		rejection = &CollectorError{Code: resp.Code, Message: resp.Message}
+		if rejection.Code == 0 {
+			rejection.Code = status
+		}
+		if rejection.Message == "" {
+			rejection.Message = http.StatusText(status)
+		}
+	} else {
+		rejection = &CollectorError{Code: status, Message: http.StatusText(status)}
 	}
-	if rejection.Message == "" {
-		rejection.Message = http.StatusText(status)
+
+	if status == http.StatusTooManyRequests || (status >= 500 && status <= 599) {
+		return fmt.Errorf("%w: %w", usecase.ErrTransient, rejection)
 	}
 
 	return rejection

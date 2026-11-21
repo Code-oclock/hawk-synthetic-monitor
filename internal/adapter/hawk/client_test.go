@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/entity"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
-func fakeCollector(t *testing.T, status int, body string, got map[string]any) *httptest.Server {
+func fakeCollector(t *testing.T, status int, contentType, body string, got map[string]any) *httptest.Server {
 	t.Helper()
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,14 +26,14 @@ func fakeCollector(t *testing.T, status int, body string, got map[string]any) *h
 		if got != nil {
 			_ = json.NewDecoder(r.Body).Decode(&got)
 		}
-		w.Header().Set("Content-Type", "application/json")
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
 }
 
-// fakeAPI serves login and events queries. The events query requires "Bearer tok-1"
-// and returns an empty list for the first eventsAfter calls.
 type fakeAPI struct {
 	srv         *httptest.Server
 	logins      atomic.Int32
@@ -39,6 +41,10 @@ type fakeAPI struct {
 	titles      []string
 	eventsAfter int32
 	loginError  bool
+	projectNull bool
+	emptyID     bool
+	statusCode  int
+	rawBody     string
 }
 
 func newFakeAPI(t *testing.T, titles ...string) *fakeAPI {
@@ -46,6 +52,15 @@ func newFakeAPI(t *testing.T, titles ...string) *fakeAPI {
 
 	f := &fakeAPI{titles: titles}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.statusCode != 0 {
+			w.WriteHeader(f.statusCode)
+			if f.rawBody != "" {
+				_, _ = w.Write([]byte(f.rawBody))
+			}
+
+			return
+		}
+
 		var req struct {
 			Query string `json:"query"`
 		}
@@ -68,10 +83,20 @@ func newFakeAPI(t *testing.T, titles ...string) *fakeAPI {
 				return
 			}
 
+			if f.projectNull {
+				_, _ = w.Write([]byte(`{"data":{"project":null}}`))
+
+				return
+			}
+
 			evs := []string{}
 			if f.eventCalls.Add(1) > f.eventsAfter {
 				for i, title := range f.titles {
-					evs = append(evs, `{"id":"id-`+string(rune('a'+i))+`","totalCount":1,"payload":{"title":"`+title+`"}}`)
+					id := "id-" + string(rune('a'+i))
+					if f.emptyID {
+						id = ""
+					}
+					evs = append(evs, `{"id":"`+id+`","totalCount":1,"catcherType":"errors/golang","payload":{"title":"`+title+`","type":"error"}}`)
 				}
 			}
 			_, _ = w.Write([]byte(`{"data":{"project":{"events":[` + strings.Join(evs, ",") + `]}}}`))
@@ -97,7 +122,7 @@ func newClient(collectorURL, apiURL string) *hawk.Client {
 
 func TestSendEvent_OK(t *testing.T) {
 	got := map[string]any{}
-	srv := fakeCollector(t, 200, `{"code":200,"error":false,"message":"OK"}`, got)
+	srv := fakeCollector(t, 200, "application/json", `{"code":200,"error":false,"message":"OK"}`, got)
 	defer srv.Close()
 
 	if err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "Synthetic check run-1"); err != nil {
@@ -117,7 +142,7 @@ func TestSendEvent_OK(t *testing.T) {
 }
 
 func TestSendEvent_CollectorRejects(t *testing.T) {
-	srv := fakeCollector(t, 400, `{"code":400,"error":true,"message":"Integration token invalid: abc"}`, nil)
+	srv := fakeCollector(t, 400, "application/json", `{"code":400,"error":true,"message":"Integration token invalid: abc"}`, nil)
 	defer srv.Close()
 
 	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
@@ -129,6 +154,106 @@ func TestSendEvent_CollectorRejects(t *testing.T) {
 	if ce.Code != 400 || !strings.Contains(ce.Message, "Integration token invalid") {
 		t.Errorf("CollectorError = %+v", ce)
 	}
+	if errors.Is(err, usecase.ErrTransient) {
+		t.Error("400 CollectorError must not be transient")
+	}
+}
+
+func TestSendEvent_200HTML_ErrProtocol(t *testing.T) {
+	srv := fakeCollector(t, 200, "text/html", "<html>Error</html>", nil)
+	defer srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+	if !errors.Is(err, hawk.ErrProtocol) {
+		t.Fatalf("want ErrProtocol on 200 HTML, got: %v", err)
+	}
+	if errors.Is(err, usecase.ErrTransient) {
+		t.Error("protocol error must not be transient")
+	}
+}
+
+func TestSendEvent_200MissingError_ErrProtocol(t *testing.T) {
+	srv := fakeCollector(t, 200, "application/json", `{"code":200,"message":"missing error field"}`, nil)
+	defer srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+	if !errors.Is(err, hawk.ErrProtocol) {
+		t.Fatalf("want ErrProtocol on 200 without error, got: %v", err)
+	}
+}
+
+func TestSendEvent_200Null_ErrProtocol(t *testing.T) {
+	srv := fakeCollector(t, 200, "application/json", "null", nil)
+	defer srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+	if !errors.Is(err, hawk.ErrProtocol) {
+		t.Fatalf("want ErrProtocol on 200 null, got: %v", err)
+	}
+}
+
+func TestSendEvent_200ErrorTrue_CollectorError(t *testing.T) {
+	srv := fakeCollector(t, 200, "application/json", `{"code":200,"error":true,"message":"custom rejection"}`, nil)
+	defer srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+
+	var ce *hawk.CollectorError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *CollectorError on 200 error:true, got: %v", err)
+	}
+	if ce.Code != 200 || ce.Message != "custom rejection" {
+		t.Errorf("CollectorError = %+v", ce)
+	}
+	if errors.Is(err, usecase.ErrTransient) {
+		t.Error("200 error:true must not be transient")
+	}
+}
+
+func TestSendEvent_502HTML_TransientAndCollectorError(t *testing.T) {
+	srv := fakeCollector(t, 502, "text/html", "<html>Bad Gateway</html>", nil)
+	defer srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+	if !errors.Is(err, usecase.ErrTransient) {
+		t.Fatalf("want ErrTransient on 502 HTML, got: %v", err)
+	}
+
+	var ce *hawk.CollectorError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *CollectorError on 502 HTML, got: %v", err)
+	}
+	if ce.Code != 502 {
+		t.Errorf("ce.Code = %d, want 502", ce.Code)
+	}
+}
+
+func TestSendEvent_429_TransientAndCollectorError(t *testing.T) {
+	srv := fakeCollector(t, 429, "application/json", `{"code":429,"error":true,"message":"rate limit"}`, nil)
+	defer srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+	if !errors.Is(err, usecase.ErrTransient) {
+		t.Fatalf("want ErrTransient on 429, got: %v", err)
+	}
+
+	var ce *hawk.CollectorError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want *CollectorError on 429, got: %v", err)
+	}
+	if ce.Code != 429 || ce.Message != "rate limit" {
+		t.Errorf("CollectorError = %+v", ce)
+	}
+}
+
+func TestSendEvent_ClosedServer_Transient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+
+	err := newClient(srv.URL, "http://unused").SendEvent(context.Background(), "x")
+	if !errors.Is(err, usecase.ErrTransient) {
+		t.Fatalf("want ErrTransient on closed server, got: %v", err)
+	}
 }
 
 func TestSendEvent_ContextCancelled(t *testing.T) {
@@ -137,12 +262,84 @@ func TestSendEvent_ContextCancelled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	err := newClient(srv.URL, "http://unused").SendEvent(ctx, "x")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("want context.DeadlineExceeded, got: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got: %v", err)
+	}
+	if errors.Is(err, usecase.ErrTransient) {
+		t.Error("canceled ctx must not be transient")
+	}
+}
+
+func TestHealth_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Errorf("path = %s, want /health", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"redis_status":true,"mongo_db_status":true}`))
+	}))
+	defer srv.Close()
+
+	c := hawk.New(hawk.Config{CollectorURL: srv.URL})
+	if err := c.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+
+	cCustom := hawk.New(hawk.Config{HealthURL: srv.URL + "/health"})
+	if err := cCustom.Health(context.Background()); err != nil {
+		t.Fatalf("Health with custom URL: %v", err)
+	}
+}
+
+func TestHealth_RedisStatusFalse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"redis_status":false,"mongo_db_status":true}`))
+	}))
+	defer srv.Close()
+
+	c := hawk.New(hawk.Config{CollectorURL: srv.URL})
+	err := c.Health(context.Background())
+	if err == nil {
+		t.Fatal("want error when redis_status is false")
+	}
+	if errors.Is(err, usecase.ErrTransient) {
+		t.Error("unhealthy status must not be transient")
+	}
+}
+
+func TestHealth_500(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	c := hawk.New(hawk.Config{CollectorURL: srv.URL})
+	err := c.Health(context.Background())
+	if !errors.Is(err, usecase.ErrTransient) {
+		t.Fatalf("want ErrTransient on 500, got: %v", err)
+	}
+}
+
+func TestHealth_NonJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>ok</html>"))
+	}))
+	defer srv.Close()
+
+	c := hawk.New(hawk.Config{CollectorURL: srv.URL})
+	err := c.Health(context.Background())
+	if err == nil {
+		t.Fatal("want error on non-JSON body")
+	}
+	if errors.Is(err, usecase.ErrTransient) {
+		t.Error("non-JSON 200 must not be transient")
 	}
 }
 
@@ -162,8 +359,82 @@ func TestFindEvent_NotFound(t *testing.T) {
 	api := newFakeAPI(t, "other event")
 
 	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "missing")
-	if !errors.Is(err, hawk.ErrNotFound) {
+	if !errors.Is(err, usecase.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got: %v", err)
+	}
+}
+
+func TestFindEvent_ProjectNull(t *testing.T) {
+	api := newFakeAPI(t)
+	api.projectNull = true
+
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "a")
+	if !errors.Is(err, hawk.ErrProtocol) {
+		t.Fatalf("want ErrProtocol on project:null, got: %v", err)
+	}
+	if errors.Is(err, usecase.ErrNotFound) {
+		t.Error("project:null must NOT be ErrNotFound")
+	}
+}
+
+func TestFindEvent_EmptyID(t *testing.T) {
+	api := newFakeAPI(t, "a")
+	api.emptyID = true
+
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "a")
+	if !errors.Is(err, hawk.ErrProtocol) {
+		t.Fatalf("want ErrProtocol on empty ID, got: %v", err)
+	}
+}
+
+func TestFindEvent_FieldsMapped(t *testing.T) {
+	api := newFakeAPI(t, "Title-1")
+
+	ev, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "Title-1")
+	if err != nil {
+		t.Fatalf("FindEvent: %v", err)
+	}
+	want := entity.Event{
+		ProjectID:   "proj-1",
+		ID:          "id-a",
+		Title:       "Title-1",
+		CatcherType: "errors/golang",
+		Type:        "error",
+		TotalCount:  1,
+	}
+	if ev != want {
+		t.Errorf("ev = %+v, want %+v", ev, want)
+	}
+}
+
+func TestFindEvent_GraphQLNonJSON(t *testing.T) {
+	api := newFakeAPI(t)
+	api.rawBody = "<html>not json</html>"
+	api.statusCode = http.StatusOK
+
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "a")
+	if !errors.Is(err, hawk.ErrProtocol) {
+		t.Fatalf("want ErrProtocol on non-JSON GraphQL body, got: %v", err)
+	}
+}
+
+func TestFindEvent_GraphQL500(t *testing.T) {
+	api := newFakeAPI(t)
+	api.statusCode = http.StatusInternalServerError
+
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "a")
+	if !errors.Is(err, usecase.ErrTransient) {
+		t.Fatalf("want ErrTransient on GraphQL 500, got: %v", err)
+	}
+}
+
+func TestFindEvent_GraphQL429(t *testing.T) {
+	api := newFakeAPI(t)
+	api.statusCode = http.StatusTooManyRequests
+
+	_, err := newClient("http://unused", api.srv.URL).FindEvent(context.Background(), "a")
+	if !errors.Is(err, usecase.ErrTransient) {
+		t.Fatalf("want ErrTransient on GraphQL 429, got: %v", err)
 	}
 }
 
@@ -189,59 +460,7 @@ func TestFindEvent_LoginFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Wrong email or password") {
 		t.Fatalf("the GraphQL error text must be part of err, got: %v", err)
 	}
-	if errors.Is(err, hawk.ErrNotFound) {
+	if errors.Is(err, usecase.ErrNotFound) {
 		t.Error("a login failure must not look like a missing event")
-	}
-}
-
-func TestWaitForEvent_AppearsLater(t *testing.T) {
-	api := newFakeAPI(t, "Synthetic check run-3")
-	api.eventsAfter = 2
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	ev, err := newClient("http://unused", api.srv.URL).WaitForEvent(ctx, "Synthetic check run-3", 5*time.Millisecond)
-	if err != nil {
-		t.Fatalf("WaitForEvent: %v", err)
-	}
-	if ev.Title != "Synthetic check run-3" {
-		t.Errorf("ev = %+v", ev)
-	}
-	if n := api.eventCalls.Load(); n != 3 {
-		t.Errorf("events queried %d times, want 3 (two empty, one hit)", n)
-	}
-}
-
-func TestWaitForEvent_Timeout(t *testing.T) {
-	api := newFakeAPI(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-	defer cancel()
-
-	start := time.Now()
-	_, err := newClient("http://unused", api.srv.URL).WaitForEvent(ctx, "never", 10*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("want context.DeadlineExceeded, got: %v", err)
-	}
-	if d := time.Since(start); d > 500*time.Millisecond {
-		t.Errorf("WaitForEvent hung for %v after the timeout", d)
-	}
-}
-
-func TestWaitForEvent_LoginErrorStopsImmediately(t *testing.T) {
-	api := newFakeAPI(t, "a")
-	api.loginError = true
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	start := time.Now()
-	_, err := newClient("http://unused", api.srv.URL).WaitForEvent(ctx, "a", 10*time.Millisecond)
-	if err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a login failure must be returned at once, not after the timeout: %v", err)
-	}
-	if time.Since(start) > 500*time.Millisecond {
-		t.Error("a login failure must not be retried until the timeout")
 	}
 }
