@@ -17,7 +17,7 @@ func TestSave_LatestRoundtrip(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "roundtrip.db")
-	repo, err := sqlite.Open(dbPath)
+	repo, err := sqlite.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSave_LatestRoundtrip(t *testing.T) {
 func TestSave_UpsertReplacesResult(t *testing.T) {
 	t.Parallel()
 
-	repo, err := sqlite.Open(":memory:")
+	repo, err := sqlite.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("Open :memory: failed: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSave_UpsertReplacesResult(t *testing.T) {
 func TestLatest_IgnoresRunningAndCanceled_EmptyDB(t *testing.T) {
 	t.Parallel()
 
-	repo, err := sqlite.Open(":memory:")
+	repo, err := sqlite.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestLatest_IgnoresRunningAndCanceled_EmptyDB(t *testing.T) {
 func TestRecent_OrderAndLimit(t *testing.T) {
 	t.Parallel()
 
-	repo, err := sqlite.Open(":memory:")
+	repo, err := sqlite.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestRecent_OrderAndLimit(t *testing.T) {
 func TestStats_CountsAndSuccessRateWithSince(t *testing.T) {
 	t.Parallel()
 
-	repo, err := sqlite.Open(":memory:")
+	repo, err := sqlite.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestPersistence(t *testing.T) {
 
 	dbPath := filepath.Join(t.TempDir(), "persist.db")
 
-	repo1, err := sqlite.Open(dbPath)
+	repo1, err := sqlite.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("Open 1 failed: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestPersistence(t *testing.T) {
 		t.Fatalf("Close 1 failed: %v", err)
 	}
 
-	repo2, err := sqlite.Open(dbPath)
+	repo2, err := sqlite.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("Open 2 failed: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestConcurrentSaves(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "concurrent.db")
-	repo, err := sqlite.Open(dbPath)
+	repo, err := sqlite.Open(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestConcurrentSaves(t *testing.T) {
 func TestCanceledContext(t *testing.T) {
 	t.Parallel()
 
-	repo, err := sqlite.Open(":memory:")
+	repo, err := sqlite.Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}

@@ -24,7 +24,7 @@ type Repo struct {
 }
 
 // Open creates the file and schema; path ":memory:" works as an in-memory database.
-func Open(path string) (*Repo, error) {
+func Open(ctx context.Context, path string) (*Repo, error) {
 	dsn := path
 	if path != ":memory:" {
 		if strings.Contains(path, "?") {
@@ -47,14 +47,14 @@ CREATE TABLE IF NOT EXISTS runs (
 	status TEXT NOT NULL,
 	data TEXT NOT NULL
 );`
-	if _, err := db.ExecContext(context.Background(), createTableQuery); err != nil {
+	if _, err := db.ExecContext(ctx, createTableQuery); err != nil {
 		_ = db.Close()
 
 		return nil, fmt.Errorf("create runs table: %w", err)
 	}
 
 	const createIndexQuery = `CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at);`
-	if _, err := db.ExecContext(context.Background(), createIndexQuery); err != nil {
+	if _, err := db.ExecContext(ctx, createIndexQuery); err != nil {
 		_ = db.Close()
 
 		return nil, fmt.Errorf("create runs index: %w", err)

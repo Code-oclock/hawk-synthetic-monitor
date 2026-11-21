@@ -1,0 +1,18 @@
+services:
+  monitor:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-host.docker.internal,localhost}
+    ports:
+      - "8080:8080"
+      - "8085:8085"
+    volumes:
+      - monitor-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  monitor-data:
