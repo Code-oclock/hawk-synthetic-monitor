@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/heartbeat"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/metrics"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/sqlite"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/telegram"
@@ -76,6 +77,10 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		deps.Notifier = telegram.New(cfg.TelegramURL, nil)
 	} else {
 		log.Warn("TELEGRAM_NOTIFY_URL is not set: failures will not be reported to Telegram")
+	}
+
+	if cfg.HeartbeatURL != "" {
+		deps.Heartbeat = heartbeat.New(cfg.HeartbeatURL, nil)
 	}
 
 	check := usecase.NewCheck(deps, usecase.Options{

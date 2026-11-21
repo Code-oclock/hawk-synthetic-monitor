@@ -29,10 +29,11 @@ type Config struct {
 	MaxAttempts    int
 	CleanupEnabled bool
 
-	HTTPAddr    string
-	WebhookAddr string
-	DBPath      string
-	TelegramURL string
+	HTTPAddr     string
+	WebhookAddr  string
+	DBPath       string
+	TelegramURL  string
+	HeartbeatURL string
 }
 
 type reader struct {
@@ -63,10 +64,11 @@ func Load(get func(string) string) (Config, error) {
 		MaxAttempts:    r.integer("MONITOR_MAX_ATTEMPTS", 3),
 		CleanupEnabled: r.boolean("MONITOR_CLEANUP", false),
 
-		HTTPAddr:    r.str("MONITOR_HTTP_ADDR", ":8080"),
-		WebhookAddr: r.str("MONITOR_WEBHOOK_ADDR", ":8085"),
-		DBPath:      r.str("MONITOR_DB_PATH", "monitor.db"),
-		TelegramURL: get("TELEGRAM_NOTIFY_URL"),
+		HTTPAddr:     r.str("MONITOR_HTTP_ADDR", ":8080"),
+		WebhookAddr:  r.str("MONITOR_WEBHOOK_ADDR", ":8085"),
+		DBPath:       r.str("MONITOR_DB_PATH", "monitor.db"),
+		TelegramURL:  get("TELEGRAM_NOTIFY_URL"),
+		HeartbeatURL: get("HEARTBEAT_URL"),
 	}
 
 	if cfg.Interval < time.Second {

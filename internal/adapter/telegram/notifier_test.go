@@ -611,3 +611,48 @@ func TestFormatMessage_Truncation(t *testing.T) {
 		t.Errorf("expected 3501 runes (3500 runes + ellipsis), got %d", runeCount)
 	}
 }
+
+func TestNotifier_SendText_Success(t *testing.T) {
+	t.Parallel()
+
+	var gotMessage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotMessage = r.PostForm.Get("message")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := newNotifier(srv.URL, srv.Client())
+	if err := n.SendText(context.Background(), "hello world"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMessage != "hello world" {
+		t.Errorf("message = %q, want 'hello world'", gotMessage)
+	}
+}
+
+func TestNotifier_SendText_Truncation(t *testing.T) {
+	t.Parallel()
+
+	var gotMessage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotMessage = r.PostForm.Get("message")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	longText := strings.Repeat("абвг", 1000) // 4000 runes
+	n := newNotifier(srv.URL, srv.Client())
+	if err := n.SendText(context.Background(), longText); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if runeCount := utf8.RuneCountInString(gotMessage); runeCount != 3501 {
+		t.Errorf("expected 3501 runes, got %d", runeCount)
+	}
+	if !strings.HasSuffix(gotMessage, "…") {
+		t.Errorf("expected suffix '…'")
+	}
+}

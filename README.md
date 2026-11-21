@@ -30,6 +30,8 @@ What the result tells you:
 
 A timeout shows where the event stopped being observable. It does not by itself prove which worker is at fault.
 
+Known limits: the API is polled for the project's latest 20 events, so use a dedicated project (the default `bootstrap.sh` project is one) and not one that receives heavy traffic; a retried `send` after a lost answer may create a second event with the same title (Hawk groups them, so it does not trigger a second notification); the webhook receiver accepts any POST with the right project id and title, but the title contains a random run id that only Hawk and the monitor know.
+
 ## Run it
 
 You need a running Hawk (collector, API, and the `default`, `grouper`, `notifier` and `webhook` workers) and a project in it. The service never creates accounts or projects itself; `scripts/bootstrap.sh` does that once.
@@ -78,9 +80,24 @@ Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRA
 | `MONITOR_CLEANUP` | `false` | delete the test event after a passed check |
 | `MONITOR_HTTP_ADDR` / `MONITOR_WEBHOOK_ADDR` | `:8080` / `:8085` | listen addresses |
 | `MONITOR_DB_PATH` | `monitor.db` (`/data/monitor.db` in Docker) | SQLite history |
-| `TELEGRAM_NOTIFY_URL` | empty | `@codex_bot` webhook URL; empty disables alerts |
+| `TELEGRAM_NOTIFY_URL` | empty | `@codex_bot` webhook URL (send `/notify_start` to the bot in a chat); empty disables alerts |
+| `HEARTBEAT_URL` | empty | where to POST after every finished check (see the watchdog) |
 
 Alerts: one message for every failed check, and one when the checks pass again after a failure. A failure to send an alert or to save the result is recorded in the result (`reporting_errors`) and never changes the verdict about Hawk.
+
+## Observability and a watcher for the monitor itself
+
+Two optional compose profiles:
+
+```sh
+docker compose --profile observability up -d   # Prometheus :9090 and Grafana :3001 (anonymous viewer), dashboard "Hawk synthetic monitor" is provisioned
+docker compose --profile watchdog up -d        # watchdog :8090
+```
+
+- **Metrics** (`/metrics`, prefix `hawk_monitor_`): runs by status, stage outcomes, stage duration and event latency histograms, timestamps of the last run and the last success. Labels come from fixed sets only; run ids and error texts are never labels.
+- **Heartbeat**: with `HEARTBEAT_URL` set, the monitor POSTs `{status, run_id, finished_at}` after **every finished check, failed ones too**, so a failing Hawk is not mistaken for a dead monitor. The `watchdog` service (`cmd/watchdog`) alerts Telegram when no ping arrives for `WATCHDOG_TIMEOUT` (default 25 m, must exceed the check interval) and once more when pings resume. A watchdog on the same Docker host does not notice that host dying: run it elsewhere for that (it is the same image with `entrypoint: watchdog`; it only needs `TELEGRAM_NOTIFY_URL`).
+- To try it: stop the monitor (`docker compose stop monitor`) and wait for the timeout; start it again to get the recovery message.
+- `POST /run` has no authentication, so compose publishes the operations port on `127.0.0.1` only. Put a reverse proxy with authentication in front of it before exposing it.
 
 ## Hawk setup
 
@@ -105,6 +122,7 @@ Clean architecture in its light Go form: dependencies point inward, and the use 
 
 ```
 cmd/monitor            entry point: config -> app.Run
+cmd/watchdog           separate small service that alerts when heartbeats stop
 internal/
   entity/              domain types: RunResult, StageResult, Alert, Stats. Imports nothing.
   usecase/             Check (the scenario) and its ports: HawkGateway, DeliveryInbox,
@@ -115,9 +133,11 @@ internal/
     sqlite/            history, implementing ResultRepo (pure Go driver, no CGO)
     telegram/          alerts through the @codex_bot webhook, implementing Notifier
     metrics/           Prometheus collectors, implementing Observer
+    heartbeat/         heartbeat ping, implementing Heartbeat
   controller/
     scheduler/         runs a check every interval
     http/              /healthz /run /runs /stats /metrics
+  watchdog/            the independent watcher behind cmd/watchdog
   config/              environment variables -> Config
   app/                 composition root: builds adapters, injects them, runs servers
 ```

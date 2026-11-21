@@ -50,16 +50,19 @@ func (n *Notifier) WithRetryDelays(delays []time.Duration) *Notifier {
 	return n
 }
 
-// Notify delivers the alert to the CodeX bot webhook.
-func (n *Notifier) Notify(ctx context.Context, alert entity.Alert) error {
+// SendText delivers a plain-text message to the CodeX bot webhook.
+func (n *Notifier) SendText(ctx context.Context, text string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	msg := FormatMessage(alert)
+	runes := []rune(text)
+	if len(runes) > maxRunes {
+		text = string(runes[:maxRunes]) + "…"
+	}
 
 	form := url.Values{}
-	form.Set("message", msg)
+	form.Set("message", text)
 	encodedForm := form.Encode()
 
 	delays := n.retryDelays
@@ -132,6 +135,11 @@ func (n *Notifier) Notify(ctx context.Context, alert entity.Alert) error {
 	}
 
 	return fmt.Errorf("telegram notification failed after %s: %w", formatAttempts(maxAttempts), attemptErr)
+}
+
+// Notify delivers the alert to the CodeX bot webhook.
+func (n *Notifier) Notify(ctx context.Context, alert entity.Alert) error {
+	return n.SendText(ctx, FormatMessage(alert))
 }
 
 func formatAttempts(n int) string {

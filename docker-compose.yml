@@ -18,6 +18,23 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  watchdog:
+    profiles: ["watchdog"]
+    build:
+      context: .
+      args:
+        HTTPS_PROXY: ${BUILD_PROXY:-}
+        HTTP_PROXY: ${BUILD_PROXY:-}
+    entrypoint: ["watchdog"]
+    restart: unless-stopped
+    environment:
+      TELEGRAM_NOTIFY_URL: ${TELEGRAM_NOTIFY_URL:?set TELEGRAM_NOTIFY_URL in .env}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      WATCHDOG_TIMEOUT: ${WATCHDOG_TIMEOUT:-25m}
+    ports:
+      - "127.0.0.1:8090:8090"
+
   prometheus:
     profiles: ["observability"]
     image: prom/prometheus:v3.5.0
