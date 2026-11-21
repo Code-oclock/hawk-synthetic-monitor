@@ -108,3 +108,12 @@ type Alert struct {
 	Kind   AlertKind
 	Result RunResult
 }
+
+// Stats aggregates run counts over a time window.
+type Stats struct {
+	Total       int
+	Passed      int
+	Failed      int
+	Canceled    int
+	SuccessRate float64
+}

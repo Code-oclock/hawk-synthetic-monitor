@@ -23,15 +23,6 @@ type Repo struct {
 	db *sql.DB
 }
 
-// Stats aggregates counts and success rate over a time window.
-type Stats struct {
-	Total       int
-	Passed      int
-	Failed      int
-	Canceled    int
-	SuccessRate float64
-}
-
 // Open creates the file and schema; path ":memory:" works as an in-memory database.
 func Open(path string) (*Repo, error) {
 	dsn := path
@@ -170,7 +161,7 @@ func (r *Repo) Recent(ctx context.Context, limit int) ([]entity.RunResult, error
 }
 
 // Stats returns counts and success rate for runs with started_at >= since.
-func (r *Repo) Stats(ctx context.Context, since time.Time) (Stats, error) {
+func (r *Repo) Stats(ctx context.Context, since time.Time) (entity.Stats, error) {
 	var sinceNano int64 = math.MinInt64
 	if !since.IsZero() {
 		sinceNano = since.UnixNano()
@@ -185,7 +176,7 @@ SELECT
 FROM runs
 WHERE started_at >= ?;`
 
-	var stats Stats
+	var stats entity.Stats
 	err := r.db.QueryRowContext(ctx, query, sinceNano).Scan(
 		&stats.Total,
 		&stats.Passed,
@@ -193,7 +184,7 @@ WHERE started_at >= ?;`
 		&stats.Canceled,
 	)
 	if err != nil {
-		return Stats{}, fmt.Errorf("stats: %w", err)
+		return entity.Stats{}, fmt.Errorf("stats: %w", err)
 	}
 
 	if denom := stats.Passed + stats.Failed; denom > 0 {
