@@ -24,6 +24,7 @@ linters:
     - canonicalheader
     - contextcheck
     - copyloopvar
+    - depguard
     - errname
     - errorlint
     - gocritic
@@ -42,6 +43,20 @@ linters:
     - usestdlibvars
     - whitespace
   settings:
+    depguard:
+      rules:
+        usecase-and-entity:
+          list-mode: lax
+          files:
+            - "**/internal/usecase/**"
+            - "**/internal/entity/**"
+          deny:
+            - pkg: github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter
+              desc: use cases depend on ports, not adapters
+            - pkg: github.com/Code-oclock/hawk-synthetic-monitor/internal/controller
+              desc: use cases must not know about controllers
+            - pkg: github.com/Code-oclock/hawk-synthetic-monitor/internal/app
+              desc: use cases must not know about the composition root
     nlreturn:
       block-size: 3
     gocritic:
