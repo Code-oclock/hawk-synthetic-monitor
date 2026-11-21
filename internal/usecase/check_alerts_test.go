@@ -119,3 +119,46 @@ func TestCheck_RetryStopsAtLastAttemptWithoutSleeping(t *testing.T) {
 		t.Fatalf("health stage = %+v, want 2 attempts", health)
 	}
 }
+
+type fakeHeartbeat struct {
+	pings []entity.Status
+	err   error
+}
+
+func (h *fakeHeartbeat) Ping(_ context.Context, r entity.RunResult) error {
+	h.pings = append(h.pings, r.Status)
+
+	return h.err
+}
+
+func TestCheck_HeartbeatPingedAfterFailedAndPassedRuns(t *testing.T) {
+	env := newTestEnv(testOptions())
+	hb := &fakeHeartbeat{}
+	env.setHeartbeat(hb)
+
+	env.hawk.healthFn = func(context.Context) error { return errors.New("down") }
+	if _, err := env.check.Run(context.Background(), entity.TriggerScheduled); err != nil {
+		t.Fatal(err)
+	}
+
+	env.hawk.healthFn = nil
+	runPassing(t, env)
+
+	if len(hb.pings) != 2 || hb.pings[0] != entity.StatusFailed || hb.pings[1] != entity.StatusPassed {
+		t.Fatalf("pings = %v, want [failed passed]: a failed check must not look like a dead monitor", hb.pings)
+	}
+}
+
+func TestCheck_HeartbeatErrorOnlyReported(t *testing.T) {
+	env := newTestEnv(testOptions())
+	env.setHeartbeat(&fakeHeartbeat{err: errors.New("watcher unreachable")})
+	env.inbox.Deliver(entity.Delivery{ReceivedAt: time.Now()})
+
+	res, err := env.check.Run(context.Background(), entity.TriggerScheduled)
+	if err != nil || res.Status != entity.StatusPassed {
+		t.Fatalf("run: %v %v", res.Status, err)
+	}
+	if len(res.ReportingErrors) != 1 {
+		t.Fatalf("reporting errors = %v, want the heartbeat failure", res.ReportingErrors)
+	}
+}

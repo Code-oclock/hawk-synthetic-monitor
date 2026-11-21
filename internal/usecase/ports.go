@@ -51,6 +51,11 @@ type Cleaner interface {
 	RemoveEvent(ctx context.Context, event entity.Event) error
 }
 
+// Heartbeat tells an external watcher that the monitor is alive and its checks are running.
+type Heartbeat interface {
+	Ping(ctx context.Context, result entity.RunResult) error
+}
+
 type Observer interface {
 	Observe(result entity.RunResult)
 }

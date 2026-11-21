@@ -283,7 +283,13 @@ type testEnv struct {
 	observer *fakeObserver
 	clock    usecase.Clock
 	opts     usecase.Options
+	deps     usecase.Deps
 	check    *usecase.Check
+}
+
+func (e *testEnv) setHeartbeat(h usecase.Heartbeat) {
+	e.deps.Heartbeat = h
+	e.check = usecase.NewCheck(e.deps, e.opts)
 }
 
 func newTestEnv(opts usecase.Options) *testEnv {
@@ -317,6 +323,7 @@ func newTestEnv(opts usecase.Options) *testEnv {
 		observer: observer,
 		clock:    clock,
 		opts:     opts,
+		deps:     deps,
 		check:    check,
 	}
 }

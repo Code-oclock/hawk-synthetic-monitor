@@ -12,16 +12,17 @@ import (
 
 const titlePrefix = "synthetic-check "
 
-// Deps are the adapters a Check needs. Cleaner, Observer and Notifier may be nil.
+// Deps are the adapters a Check needs. Cleaner, Observer, Heartbeat and Notifier may be nil.
 type Deps struct {
-	Hawk     HawkGateway
-	Inbox    DeliveryInbox
-	Repo     ResultRepo
-	Notifier Notifier
-	Cleaner  Cleaner
-	Observer Observer
-	Clock    Clock
-	NewID    func() string
+	Hawk      HawkGateway
+	Inbox     DeliveryInbox
+	Repo      ResultRepo
+	Notifier  Notifier
+	Cleaner   Cleaner
+	Observer  Observer
+	Heartbeat Heartbeat
+	Clock     Clock
+	NewID     func() string
 }
 
 // Check runs one end-to-end check of Hawk at a time.
@@ -361,6 +362,14 @@ func (c *Check) report(ctx context.Context, run *entity.RunResult) {
 
 	if err := c.deps.Repo.Save(saveCtx, *run); err != nil {
 		run.ReportingErrors = append(run.ReportingErrors, *classify(fmt.Errorf("save: %w", err)))
+	}
+	if c.deps.Heartbeat != nil && run.Status != entity.StatusCanceled {
+		pingCtx, cancelPing := context.WithTimeout(base, c.opts.ReportingTimeout)
+		defer cancelPing()
+
+		if err := c.deps.Heartbeat.Ping(pingCtx, *run); err != nil {
+			run.ReportingErrors = append(run.ReportingErrors, *classify(fmt.Errorf("heartbeat: %w", err)))
+		}
 	}
 	if c.deps.Observer != nil {
 		c.deps.Observer.Observe(*run)
