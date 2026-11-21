@@ -75,6 +75,24 @@ type ActionResult struct {
 	Failure *Failure
 }
 
+// QueueStat is the state of a RabbitMQ queue on the path of an event through Hawk.
+type QueueStat struct {
+	Name      string
+	Messages  int
+	Consumers int
+	Missing   bool
+}
+
+// Diagnostics is a snapshot of Hawk taken right after a failed run.
+type Diagnostics struct {
+	CollectedAt time.Time
+	// CollectorHealth is nil when the collector answered its health check.
+	CollectorHealth *Failure
+	Queues          []QueueStat
+	// Errors lists problems met while collecting the snapshot itself.
+	Errors []Failure
+}
+
 // RunResult describes one check of Hawk. Status reflects Hawk only; reporting problems go to ReportingErrors.
 type RunResult struct {
 	ID         string
@@ -91,6 +109,9 @@ type RunResult struct {
 
 	VisibilityLatency *time.Duration
 	WebhookLatency    *time.Duration
+
+	// Diagnostics is set only for failed runs and only when a queue inspector is configured.
+	Diagnostics *Diagnostics
 
 	Cleanup         ActionResult
 	Notification    ActionResult

@@ -51,6 +51,11 @@ type Cleaner interface {
 	RemoveEvent(ctx context.Context, event entity.Event) error
 }
 
+// QueueInspector reads the state of the queues on the event path, to explain a failure.
+type QueueInspector interface {
+	Queues(ctx context.Context) ([]entity.QueueStat, error)
+}
+
 // Heartbeat tells an external watcher that the monitor is alive and its checks are running.
 type Heartbeat interface {
 	Ping(ctx context.Context, result entity.RunResult) error
