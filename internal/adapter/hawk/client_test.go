@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Code-oclock/hawk-synthetic-monitor/internal/hawk"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
 )
 
 func fakeCollector(t *testing.T, status int, body string, got map[string]any) *httptest.Server {

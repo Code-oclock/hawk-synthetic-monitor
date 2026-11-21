@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Code-oclock/hawk-synthetic-monitor/internal/hawk"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
 )
 
 func main() {

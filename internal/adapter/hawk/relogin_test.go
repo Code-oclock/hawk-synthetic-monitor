@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Code-oclock/hawk-synthetic-monitor/internal/hawk"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
 )
 
 func TestFindEvent_LogsInAgainWhenTokenExpired(t *testing.T) {
