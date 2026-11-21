@@ -23,8 +23,9 @@ const (
 var _ usecase.Notifier = (*Notifier)(nil)
 
 type Notifier struct {
-	url    string
-	client *http.Client
+	url         string
+	client      *http.Client
+	retryDelays []time.Duration
 }
 
 // New creates a Telegram notifier targeting the given CodeX bot webhook URL.
@@ -36,9 +37,17 @@ func New(rawURL string, client *http.Client) *Notifier {
 	}
 
 	return &Notifier{
-		url:    rawURL,
-		client: client,
+		url:         rawURL,
+		client:      client,
+		retryDelays: []time.Duration{time.Second, 2 * time.Second},
 	}
+}
+
+// WithRetryDelays sets the waits between attempts; one more attempt is made per delay.
+func (n *Notifier) WithRetryDelays(delays []time.Duration) *Notifier {
+	n.retryDelays = delays
+
+	return n
 }
 
 // Notify delivers the alert to the CodeX bot webhook.
@@ -51,49 +60,86 @@ func (n *Notifier) Notify(ctx context.Context, alert entity.Alert) error {
 
 	form := url.Values{}
 	form.Set("message", msg)
+	encodedForm := form.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, strings.NewReader(form.Encode()))
-	if err != nil {
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			return fmt.Errorf("create request: %w", urlErr.Err)
-		}
-
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
+	delays := n.retryDelays
+	maxAttempts := 1 + len(delays)
 	client := n.client
 	if client == nil {
 		client = &http.Client{Timeout: defaultTimeout}
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
+	var attemptErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if errors.Is(err, context.Canceled) {
-			return context.Canceled
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, strings.NewReader(encodedForm))
+		if err != nil {
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) {
+				return fmt.Errorf("create request: %w", urlErr.Err)
+			}
+
+			return fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, context.Canceled) {
+				return context.Canceled
+			}
+
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) {
+				attemptErr = fmt.Errorf("send request: %w", urlErr.Err)
+			} else {
+				attemptErr = fmt.Errorf("send request: %w", err)
+			}
+		} else {
+			if resp.Body != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+
+			attemptErr = fmt.Errorf("status %d", resp.StatusCode)
+			if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+				return fmt.Errorf("telegram notification failed after %s: %w", formatAttempts(attempt), attemptErr)
+			}
 		}
 
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			return fmt.Errorf("send request: %w", urlErr.Err)
+		if attempt == maxAttempts {
+			return fmt.Errorf("telegram notification failed after %s: %w", formatAttempts(attempt), attemptErr)
 		}
 
-		return fmt.Errorf("send request: %w", err)
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
+		timer := time.NewTimer(delays[attempt-1])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("telegram notification failed: status %d", resp.StatusCode)
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 
-	return nil
+	return fmt.Errorf("telegram notification failed after %s: %w", formatAttempts(maxAttempts), attemptErr)
+}
+
+func formatAttempts(n int) string {
+	if n == 1 {
+		return "1 attempt"
+	}
+
+	return fmt.Sprintf("%d attempts", n)
 }
 
 // FormatMessage formats an alert into a plain-text Telegram message.

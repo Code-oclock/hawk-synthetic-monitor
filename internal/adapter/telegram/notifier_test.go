@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -14,6 +15,181 @@ import (
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/telegram"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/entity"
 )
+
+func newNotifier(url string, client *http.Client) *telegram.Notifier {
+	return telegram.New(url, client).WithRetryDelays([]time.Duration{time.Millisecond, 2 * time.Millisecond})
+}
+
+func TestNotifier_Notify_CanceledWhileWaiting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstReqDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		select {
+		case <-firstReqDone:
+		default:
+			close(firstReqDone)
+		}
+	}))
+	defer srv.Close()
+
+	go func() {
+		<-firstReqDone
+		time.Sleep(15 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	n := telegram.New(srv.URL, srv.Client()).WithRetryDelays([]time.Duration{time.Second, time.Second})
+	err := n.Notify(ctx, entity.Alert{
+		Kind: entity.AlertFailure,
+		Result: entity.RunResult{
+			ID: "run-cancel-wait",
+		},
+	})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got err = %v, want context.Canceled", err)
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("expected fast cancellation, took %v", elapsed)
+	}
+}
+
+func TestNotifier_Notify_Retry500Then200(t *testing.T) {
+	t.Parallel()
+
+	var reqCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&reqCount, 1)
+		if count == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := newNotifier(srv.URL, srv.Client())
+	err := n.Notify(context.Background(), entity.Alert{
+		Kind: entity.AlertFailure,
+		Result: entity.RunResult{
+			ID: "run-retry-500",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&reqCount); got != 2 {
+		t.Errorf("request count = %d, want 2", got)
+	}
+}
+
+func TestNotifier_Notify_NoRetryOn404(t *testing.T) {
+	t.Parallel()
+
+	var reqCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reqCount, 1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	n := newNotifier(srv.URL, srv.Client())
+	err := n.Notify(context.Background(), entity.Alert{
+		Kind: entity.AlertFailure,
+		Result: entity.RunResult{
+			ID: "run-404",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+	if got := atomic.LoadInt32(&reqCount); got != 1 {
+		t.Errorf("request count = %d, want 1", got)
+	}
+}
+
+func TestNotifier_Notify_Persistent502(t *testing.T) {
+	t.Parallel()
+
+	var reqCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reqCount, 1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	n := newNotifier(srv.URL, srv.Client())
+	err := n.Notify(context.Background(), entity.Alert{
+		Kind: entity.AlertFailure,
+		Result: entity.RunResult{
+			ID: "run-persistent-502",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for persistent 502, got nil")
+	}
+	if got := atomic.LoadInt32(&reqCount); got != 3 {
+		t.Errorf("request count = %d, want 3", got)
+	}
+	if !strings.Contains(err.Error(), "3 attempts") {
+		t.Errorf("error %q should mention '3 attempts'", err.Error())
+	}
+	if strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("error %q must not leak server URL", err.Error())
+	}
+}
+
+func TestNotifier_Notify_NetworkErrorThenSuccess(t *testing.T) {
+	t.Parallel()
+
+	var reqCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&reqCount, 1)
+		if count == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Errorf("server does not support hijacking")
+
+				return
+			}
+
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack failed: %v", err)
+
+				return
+			}
+
+			_ = conn.Close()
+
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := newNotifier(srv.URL, srv.Client())
+	err := n.Notify(context.Background(), entity.Alert{
+		Kind: entity.AlertFailure,
+		Result: entity.RunResult{
+			ID: "run-hijack-retry",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&reqCount); got != 2 {
+		t.Errorf("request count = %d, want 2", got)
+	}
+}
 
 func TestNotifier_Notify_FormBody(t *testing.T) {
 	t.Parallel()
@@ -47,7 +223,7 @@ func TestNotifier_Notify_FormBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	n := telegram.New(srv.URL, srv.Client())
+	n := newNotifier(srv.URL, srv.Client())
 
 	alert := entity.Alert{
 		Kind: entity.AlertRecovery,
@@ -104,7 +280,7 @@ func TestNotifier_Notify_HTTPStatusErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			n := telegram.New(srv.URL, srv.Client())
+			n := newNotifier(srv.URL, srv.Client())
 			err := n.Notify(context.Background(), entity.Alert{
 				Kind: entity.AlertFailure,
 				Result: entity.RunResult{
@@ -132,7 +308,7 @@ func TestNotifier_Notify_UnreachableServer(t *testing.T) {
 	targetURL := srv.URL
 	srv.Close()
 
-	n := telegram.New(targetURL, &http.Client{Timeout: 500 * time.Millisecond})
+	n := newNotifier(targetURL, &http.Client{Timeout: 500 * time.Millisecond})
 	err := n.Notify(context.Background(), entity.Alert{
 		Kind: entity.AlertFailure,
 		Result: entity.RunResult{
@@ -159,7 +335,7 @@ func TestNotifier_Notify_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	n := telegram.New(srv.URL, srv.Client())
+	n := newNotifier(srv.URL, srv.Client())
 	err := n.Notify(ctx, entity.Alert{
 		Kind: entity.AlertFailure,
 		Result: entity.RunResult{
@@ -175,7 +351,7 @@ func TestNotifier_Notify_CanceledContext(t *testing.T) {
 func TestNotifier_New_NilClient(t *testing.T) {
 	t.Parallel()
 
-	n := telegram.New("https://example.com/secret", nil)
+	n := newNotifier("https://example.com/secret", nil)
 	if n == nil {
 		t.Fatal("expected non-nil Notifier")
 	}
