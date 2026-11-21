@@ -11,6 +11,25 @@ type failureDTO struct {
 	Message string `json:"message"`
 }
 
+type actionDTO struct {
+	Status  string      `json:"status"`
+	Failure *failureDTO `json:"failure,omitempty"`
+}
+
+type queueDTO struct {
+	Name      string `json:"name"`
+	Messages  int    `json:"messages"`
+	Consumers int    `json:"consumers"`
+	Missing   bool   `json:"missing"`
+}
+
+type diagnosticsDTO struct {
+	CollectedAt     time.Time    `json:"collected_at"`
+	CollectorHealth *failureDTO  `json:"collector_health,omitempty"`
+	Queues          []queueDTO   `json:"queues"`
+	Errors          []failureDTO `json:"errors"`
+}
+
 type stageDTO struct {
 	Stage      string      `json:"stage"`
 	Status     string      `json:"status"`
@@ -21,18 +40,20 @@ type stageDTO struct {
 }
 
 type runDTO struct {
-	ID                  string       `json:"id"`
-	ProjectID           string       `json:"project_id"`
-	Title               string       `json:"title"`
-	Trigger             string       `json:"trigger"`
-	Status              string       `json:"status"`
-	StartedAt           time.Time    `json:"started_at"`
-	FinishedAt          time.Time    `json:"finished_at"`
-	DurationMS          int64        `json:"duration_ms"`
-	Stages              []stageDTO   `json:"stages"`
-	VisibilityLatencyMS *int64       `json:"visibility_latency_ms,omitempty"`
-	WebhookLatencyMS    *int64       `json:"webhook_latency_ms,omitempty"`
-	ReportingErrors     []failureDTO `json:"reporting_errors"`
+	ID                  string          `json:"id"`
+	ProjectID           string          `json:"project_id"`
+	Title               string          `json:"title"`
+	Trigger             string          `json:"trigger"`
+	Status              string          `json:"status"`
+	StartedAt           time.Time       `json:"started_at"`
+	FinishedAt          time.Time       `json:"finished_at"`
+	DurationMS          int64           `json:"duration_ms"`
+	Stages              []stageDTO      `json:"stages"`
+	VisibilityLatencyMS *int64          `json:"visibility_latency_ms,omitempty"`
+	WebhookLatencyMS    *int64          `json:"webhook_latency_ms,omitempty"`
+	Cleanup             *actionDTO      `json:"cleanup,omitempty"`
+	Diagnostics         *diagnosticsDTO `json:"diagnostics,omitempty"`
+	ReportingErrors     []failureDTO    `json:"reporting_errors"`
 }
 
 type statsDTO struct {
@@ -68,6 +89,10 @@ func toRunDTO(r entity.RunResult) runDTO {
 			SkipReason: s.SkipReason,
 		})
 	}
+	if r.Cleanup.Status != "" {
+		out.Cleanup = toActionDTO(r.Cleanup)
+	}
+	out.Diagnostics = toDiagnosticsDTO(r.Diagnostics)
 	for _, f := range r.ReportingErrors {
 		out.ReportingErrors = append(out.ReportingErrors, failureDTO(f))
 	}
@@ -77,6 +102,45 @@ func toRunDTO(r entity.RunResult) runDTO {
 
 func toStatsDTO(s entity.Stats) statsDTO {
 	return statsDTO(s)
+}
+
+func toActionDTO(a entity.ActionResult) *actionDTO {
+	if a.Status == "" {
+		return nil
+	}
+
+	return &actionDTO{
+		Status:  string(a.Status),
+		Failure: toFailureDTO(a.Failure),
+	}
+}
+
+func toDiagnosticsDTO(d *entity.Diagnostics) *diagnosticsDTO {
+	if d == nil {
+		return nil
+	}
+
+	queues := make([]queueDTO, 0, len(d.Queues))
+	for _, q := range d.Queues {
+		queues = append(queues, queueDTO{
+			Name:      q.Name,
+			Messages:  q.Messages,
+			Consumers: q.Consumers,
+			Missing:   q.Missing,
+		})
+	}
+
+	errs := make([]failureDTO, 0, len(d.Errors))
+	for _, e := range d.Errors {
+		errs = append(errs, failureDTO(e))
+	}
+
+	return &diagnosticsDTO{
+		CollectedAt:     d.CollectedAt,
+		CollectorHealth: toFailureDTO(d.CollectorHealth),
+		Queues:          queues,
+		Errors:          errs,
+	}
 }
 
 func toFailureDTO(f *entity.Failure) *failureDTO {

@@ -518,3 +518,109 @@ func TestCanceledContext(t *testing.T) {
 		t.Error("Stats with canceled context expected error, got nil")
 	}
 }
+
+func TestSave_DiagnosticsAndCleanupRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	repo, err := sqlite.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer repo.Close()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Millisecond)
+	dur := 150 * time.Millisecond
+
+	original := entity.RunResult{
+		ID:         "run-diag-clean-rt",
+		ProjectID:  "proj-diag",
+		Title:      "Diagnostics and Cleanup Verification",
+		Trigger:    entity.TriggerScheduled,
+		Status:     entity.StatusFailed,
+		StartedAt:  now.Add(-2 * time.Minute),
+		FinishedAt: now.Add(-time.Minute),
+		Duration:   time.Minute,
+		Stages: []entity.StageResult{
+			{
+				Stage:    entity.StageHealth,
+				Status:   entity.StatusPassed,
+				Duration: &dur,
+			},
+		},
+		Diagnostics: &entity.Diagnostics{
+			CollectedAt: now,
+			CollectorHealth: &entity.Failure{
+				Code:    "timeout",
+				Message: "collector health timed out",
+			},
+			Queues: []entity.QueueStat{
+				{Name: "events", Messages: 10, Consumers: 2, Missing: false},
+				{Name: "dead-letter", Messages: 0, Consumers: 0, Missing: true},
+			},
+			Errors: []entity.Failure{
+				{Code: "error", Message: "queue check failure"},
+			},
+		},
+		Cleanup: entity.ActionResult{
+			Status:  entity.StatusFailed,
+			Failure: &entity.Failure{Code: "cleanup_err", Message: "could not clean"},
+		},
+	}
+
+	if err := repo.Save(ctx, original); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	latest, err := repo.Latest(ctx)
+	if err != nil {
+		t.Fatalf("Latest failed: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("Latest returned nil, expected result")
+	}
+
+	if latest.ID != original.ID {
+		t.Errorf("ID: got %q, want %q", latest.ID, original.ID)
+	}
+	if latest.Status != original.Status {
+		t.Errorf("Status: got %q, want %q", latest.Status, original.Status)
+	}
+	if !latest.StartedAt.Equal(original.StartedAt) {
+		t.Errorf("StartedAt: got %v, want %v", latest.StartedAt, original.StartedAt)
+	}
+	if !latest.FinishedAt.Equal(original.FinishedAt) {
+		t.Errorf("FinishedAt: got %v, want %v", latest.FinishedAt, original.FinishedAt)
+	}
+	if latest.Cleanup.Status != original.Cleanup.Status {
+		t.Errorf("Cleanup.Status: got %q, want %q", latest.Cleanup.Status, original.Cleanup.Status)
+	}
+	if latest.Cleanup.Failure == nil || *latest.Cleanup.Failure != *original.Cleanup.Failure {
+		t.Errorf("Cleanup.Failure: got %v, want %v", latest.Cleanup.Failure, original.Cleanup.Failure)
+	}
+	if latest.Diagnostics == nil {
+		t.Fatal("Diagnostics is nil")
+	}
+	if !latest.Diagnostics.CollectedAt.Equal(original.Diagnostics.CollectedAt) {
+		t.Errorf("Diagnostics.CollectedAt: got %v, want %v", latest.Diagnostics.CollectedAt, original.Diagnostics.CollectedAt)
+	}
+	if latest.Diagnostics.CollectorHealth == nil || *latest.Diagnostics.CollectorHealth != *original.Diagnostics.CollectorHealth {
+		t.Errorf("Diagnostics.CollectorHealth: got %v, want %v", latest.Diagnostics.CollectorHealth, original.Diagnostics.CollectorHealth)
+	}
+	if len(latest.Diagnostics.Queues) != len(original.Diagnostics.Queues) {
+		t.Fatalf("Diagnostics.Queues count: got %d, want %d", len(latest.Diagnostics.Queues), len(original.Diagnostics.Queues))
+	}
+	for i := range original.Diagnostics.Queues {
+		if latest.Diagnostics.Queues[i] != original.Diagnostics.Queues[i] {
+			t.Errorf("Diagnostics.Queues[%d]: got %+v, want %+v", i, latest.Diagnostics.Queues[i], original.Diagnostics.Queues[i])
+		}
+	}
+	if len(latest.Diagnostics.Errors) != len(original.Diagnostics.Errors) {
+		t.Fatalf("Diagnostics.Errors count: got %d, want %d", len(latest.Diagnostics.Errors), len(original.Diagnostics.Errors))
+	}
+	for i := range original.Diagnostics.Errors {
+		if latest.Diagnostics.Errors[i] != original.Diagnostics.Errors[i] {
+			t.Errorf("Diagnostics.Errors[%d]: got %+v, want %+v", i, latest.Diagnostics.Errors[i], original.Diagnostics.Errors[i])
+		}
+	}
+}

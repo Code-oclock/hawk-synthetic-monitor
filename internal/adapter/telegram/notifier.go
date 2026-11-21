@@ -190,6 +190,10 @@ func formatFailureAlert(res entity.RunResult) []string {
 
 	lines = append(lines, "total: "+formatDuration(&res.Duration))
 
+	if res.Diagnostics != nil {
+		lines = append(lines, formatDiagnostics(res.Diagnostics)...)
+	}
+
 	for i, repErr := range res.ReportingErrors {
 		if i >= 3 {
 			break
@@ -266,4 +270,45 @@ func formatDuration(d *time.Duration) string {
 	}
 
 	return d.Round(time.Millisecond).String()
+}
+
+func formatDiagnostics(d *entity.Diagnostics) []string {
+	if d == nil {
+		return nil
+	}
+
+	lines := make([]string, 0, 3)
+
+	if d.CollectorHealth == nil {
+		lines = append(lines, "collector: ok")
+	} else {
+		lines = append(lines, "collector: "+formatFailure(d.CollectorHealth))
+	}
+
+	if len(d.Queues) > 0 {
+		parts := make([]string, 0, len(d.Queues))
+		for _, q := range d.Queues {
+			if q.Missing {
+				parts = append(parts, q.Name+" missing!")
+				continue
+			}
+
+			consumer := "consumers"
+			if q.Consumers == 1 {
+				consumer = "consumer"
+			}
+			part := fmt.Sprintf("%s %d msgs %d %s", q.Name, q.Messages, q.Consumers, consumer)
+			if q.Consumers == 0 {
+				part += "!"
+			}
+			parts = append(parts, part)
+		}
+		lines = append(lines, "queues: "+strings.Join(parts, ", "))
+	}
+
+	if len(d.Errors) > 0 {
+		lines = append(lines, "diagnostics: "+formatFailure(&d.Errors[0]))
+	}
+
+	return lines
 }

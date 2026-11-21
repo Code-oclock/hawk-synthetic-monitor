@@ -656,3 +656,136 @@ func TestNotifier_SendText_Truncation(t *testing.T) {
 		t.Errorf("expected suffix '…'")
 	}
 }
+
+func TestFormatMessage_DiagnosticsTable(t *testing.T) {
+	t.Parallel()
+
+	dur := 100 * time.Millisecond
+
+	tests := []struct {
+		name        string
+		alert       entity.Alert
+		wantMatches []string
+		dontContain []string
+	}{
+		{
+			name: "collector ok, mixed queues, no errors",
+			alert: entity.Alert{
+				Kind: entity.AlertFailure,
+				Result: entity.RunResult{
+					ID:       "run-diag-1",
+					Duration: dur,
+					Diagnostics: &entity.Diagnostics{
+						CollectorHealth: nil,
+						Queues: []entity.QueueStat{
+							{Name: "errors/default", Messages: 0, Consumers: 1, Missing: false},
+							{Name: "grouper", Messages: 3, Consumers: 0, Missing: false},
+							{Name: "events", Messages: 10, Consumers: 2, Missing: false},
+							{Name: "dead-letter", Messages: 0, Consumers: 0, Missing: true},
+						},
+					},
+				},
+			},
+			wantMatches: []string{
+				"collector: ok",
+				"queues: errors/default 0 msgs 1 consumer, grouper 3 msgs 0 consumers!, events 10 msgs 2 consumers, dead-letter missing!",
+			},
+			dontContain: []string{"diagnostics:"},
+		},
+		{
+			name: "collector failure, no queues, diagnostics error",
+			alert: entity.Alert{
+				Kind: entity.AlertFailure,
+				Result: entity.RunResult{
+					ID:       "run-diag-2",
+					Duration: dur,
+					Diagnostics: &entity.Diagnostics{
+						CollectorHealth: &entity.Failure{Code: "timeout", Message: "deadline exceeded"},
+						Errors: []entity.Failure{
+							{Code: "error", Message: "inspect queues: connect: connection refused"},
+							{Code: "error", Message: "second error must be ignored"},
+						},
+					},
+				},
+			},
+			wantMatches: []string{
+				"collector: timeout: deadline exceeded",
+				"diagnostics: error: inspect queues: connect: connection refused",
+			},
+			dontContain: []string{"\nqueues:", "second error must be ignored"},
+		},
+		{
+			name: "collector failure code only, single queue with 0 consumers",
+			alert: entity.Alert{
+				Kind: entity.AlertFailure,
+				Result: entity.RunResult{
+					ID:       "run-diag-3",
+					Duration: dur,
+					Diagnostics: &entity.Diagnostics{
+						CollectorHealth: &entity.Failure{Code: "unavailable"},
+						Queues: []entity.QueueStat{
+							{Name: "raw", Messages: 5, Consumers: 0},
+						},
+					},
+				},
+			},
+			wantMatches: []string{
+				"collector: unavailable",
+				"queues: raw 5 msgs 0 consumers!",
+			},
+			dontContain: []string{"diagnostics:"},
+		},
+		{
+			name: "nil diagnostics",
+			alert: entity.Alert{
+				Kind: entity.AlertFailure,
+				Result: entity.RunResult{
+					ID:       "run-no-diag",
+					Duration: dur,
+				},
+			},
+			wantMatches: []string{
+				"🔴 Hawk check FAILED",
+				"total: 100ms",
+			},
+			dontContain: []string{"collector:", "queues:", "diagnostics:"},
+		},
+		{
+			name: "order check: total then diagnostics then reporting errors",
+			alert: entity.Alert{
+				Kind: entity.AlertFailure,
+				Result: entity.RunResult{
+					ID:       "run-order",
+					Duration: dur,
+					Diagnostics: &entity.Diagnostics{
+						Queues: []entity.QueueStat{
+							{Name: "q", Messages: 1, Consumers: 1},
+						},
+					},
+					ReportingErrors: []entity.Failure{
+						{Code: "reporting", Message: "rep err"},
+					},
+				},
+			},
+			wantMatches: []string{
+				"total: 100ms\ncollector: ok\nqueues: q 1 msgs 1 consumer\nreporting: rep err",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := telegram.FormatMessage(tt.alert)
+			for _, want := range tt.wantMatches {
+				if !strings.Contains(got, want) {
+					t.Errorf("FormatMessage() missing %q in:\n%s", want, got)
+				}
+			}
+			for _, notWant := range tt.dontContain {
+				if strings.Contains(got, notWant) {
+					t.Errorf("FormatMessage() unexpectedly contained %q in:\n%s", notWant, got)
+				}
+			}
+		})
+	}
+}

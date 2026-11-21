@@ -12,7 +12,7 @@ import (
 
 const titlePrefix = "synthetic-check "
 
-// Deps are the adapters a Check needs. Cleaner, Observer, Heartbeat and Notifier may be nil.
+// Deps are the adapters a Check needs. Cleaner, Observer, Heartbeat, Inspector and Notifier may be nil.
 type Deps struct {
 	Hawk      HawkGateway
 	Inbox     DeliveryInbox
@@ -21,6 +21,7 @@ type Deps struct {
 	Cleaner   Cleaner
 	Observer  Observer
 	Heartbeat Heartbeat
+	Inspector QueueInspector
 	Clock     Clock
 	NewID     func() string
 }
@@ -343,6 +344,12 @@ func (c *Check) report(ctx context.Context, run *entity.RunResult) {
 		cancel()
 	}
 
+	if run.Status == entity.StatusFailed && c.deps.Inspector != nil {
+		diagCtx, cancel := context.WithTimeout(base, c.opts.ReportingTimeout)
+		run.Diagnostics = c.diagnose(diagCtx)
+		cancel()
+	}
+
 	if alert, ok := c.nextAlert(run); ok && c.deps.Notifier != nil {
 		notifyCtx, cancel := context.WithTimeout(base, c.opts.ReportingTimeout)
 		err := c.deps.Notifier.Notify(notifyCtx, alert)
@@ -408,4 +415,23 @@ func (c *Check) cleanup(ctx context.Context, event entity.Event) entity.ActionRe
 	}
 
 	return entity.ActionResult{Status: entity.StatusPassed}
+}
+
+func (c *Check) diagnose(ctx context.Context) *entity.Diagnostics {
+	diag := &entity.Diagnostics{
+		CollectedAt: c.deps.Clock.Now(),
+	}
+
+	if err := c.deps.Hawk.Health(ctx); err != nil {
+		diag.CollectorHealth = classify(err)
+	}
+
+	queues, err := c.deps.Inspector.Queues(ctx)
+	if err != nil {
+		diag.Errors = append(diag.Errors, *classify(fmt.Errorf("inspect queues: %w", err)))
+	} else {
+		diag.Queues = queues
+	}
+
+	return diag
 }

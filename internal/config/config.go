@@ -34,6 +34,12 @@ type Config struct {
 	DBPath       string
 	TelegramURL  string
 	HeartbeatURL string
+
+	RabbitURL      string
+	RabbitUser     string
+	RabbitPassword string
+	RabbitVhost    string
+	RabbitQueues   []string
 }
 
 type reader struct {
@@ -69,6 +75,12 @@ func Load(get func(string) string) (Config, error) {
 		DBPath:       r.str("MONITOR_DB_PATH", "monitor.db"),
 		TelegramURL:  get("TELEGRAM_NOTIFY_URL"),
 		HeartbeatURL: get("HEARTBEAT_URL"),
+
+		RabbitURL:      get("RABBITMQ_MGMT_URL"),
+		RabbitUser:     r.str("RABBITMQ_USER", "guest"),
+		RabbitPassword: get("RABBITMQ_PASSWORD"),
+		RabbitVhost:    r.str("RABBITMQ_VHOST", "/"),
+		RabbitQueues:   r.list("RABBITMQ_QUEUES", []string{"errors/default", "grouper", "notifier", "sender/webhook"}),
 	}
 
 	if cfg.Interval < time.Second {
@@ -148,4 +160,18 @@ func (r *reader) boolean(key string, fallback bool) bool {
 	}
 
 	return value
+}
+
+func (r *reader) list(key string, fallback []string) []string {
+	var items []string
+	for _, item := range strings.Split(r.get(key), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		return fallback
+	}
+
+	return items
 }

@@ -161,3 +161,97 @@ func TestWrongMethod(t *testing.T) {
 		t.Fatalf("GET /run = %d, want 405", rec.Code)
 	}
 }
+
+func TestRunSerialization_DiagnosticsAndCleanup(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	failedRes := entity.RunResult{
+		ID:     "run-failed-diag",
+		Status: entity.StatusFailed,
+		Diagnostics: &entity.Diagnostics{
+			CollectedAt: now,
+			CollectorHealth: &entity.Failure{
+				Code:    "timeout",
+				Message: "health timeout",
+			},
+			Queues: []entity.QueueStat{
+				{Name: "events", Messages: 10, Consumers: 1, Missing: false},
+				{Name: "dead-letter", Messages: 0, Consumers: 0, Missing: true},
+			},
+			Errors: []entity.Failure{
+				{Code: "error", Message: "queue check err"},
+			},
+		},
+	}
+
+	hFailed := newHandler(fakeRunner{result: failedRes}, &fakeHistory{}, now)
+	recFailed := do(t, hFailed, "POST", "/run")
+	if recFailed.Code != 200 {
+		t.Fatalf("code = %d, want 200", recFailed.Code)
+	}
+
+	var failedBody map[string]any
+	if err := json.Unmarshal(recFailed.Body.Bytes(), &failedBody); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := failedBody["cleanup"]; ok {
+		t.Error("cleanup must be omitted when empty")
+	}
+
+	diagVal, ok := failedBody["diagnostics"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostics missing or not map: %v", failedBody["diagnostics"])
+	}
+	if diagVal["collected_at"] != now.Format(time.RFC3339Nano) {
+		t.Errorf("collected_at = %v, want %v", diagVal["collected_at"], now.Format(time.RFC3339Nano))
+	}
+	healthVal, ok := diagVal["collector_health"].(map[string]any)
+	if !ok || healthVal["code"] != "timeout" {
+		t.Errorf("collector_health = %v, want timeout failure", diagVal["collector_health"])
+	}
+	queuesVal, ok := diagVal["queues"].([]any)
+	if !ok || len(queuesVal) != 2 {
+		t.Fatalf("queues = %v, want 2 items", diagVal["queues"])
+	}
+	q0 := queuesVal[0].(map[string]any)
+	if q0["name"] != "events" || q0["messages"] != float64(10) || q0["consumers"] != float64(1) || q0["missing"] != false {
+		t.Errorf("q0 = %v", q0)
+	}
+	errorsVal, ok := diagVal["errors"].([]any)
+	if !ok || len(errorsVal) != 1 {
+		t.Fatalf("errors = %v, want 1 item", diagVal["errors"])
+	}
+
+	passedRes := entity.RunResult{
+		ID:     "run-passed-clean",
+		Status: entity.StatusPassed,
+		Cleanup: entity.ActionResult{
+			Status: entity.StatusPassed,
+		},
+	}
+	hPassed := newHandler(fakeRunner{result: passedRes}, &fakeHistory{}, now)
+	recPassed := do(t, hPassed, "POST", "/run")
+	if recPassed.Code != 200 {
+		t.Fatalf("code = %d, want 200", recPassed.Code)
+	}
+
+	var passedBody map[string]any
+	if err := json.Unmarshal(recPassed.Body.Bytes(), &passedBody); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := passedBody["diagnostics"]; ok {
+		t.Error("diagnostics must be omitted when nil")
+	}
+
+	cleanVal, ok := passedBody["cleanup"].(map[string]any)
+	if !ok {
+		t.Fatalf("cleanup missing or not map: %v", passedBody["cleanup"])
+	}
+	if cleanVal["status"] != "passed" {
+		t.Errorf("cleanup status = %v, want passed", cleanVal["status"])
+	}
+	if _, ok := cleanVal["failure"]; ok {
+		t.Errorf("cleanup failure must be omitted when nil: %v", cleanVal["failure"])
+	}
+}

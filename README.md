@@ -82,8 +82,22 @@ Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRA
 | `MONITOR_DB_PATH` | `monitor.db` (`/data/monitor.db` in Docker) | SQLite history |
 | `TELEGRAM_NOTIFY_URL` | empty | `@codex_bot` webhook URL (send `/notify_start` to the bot in a chat); empty disables alerts |
 | `HEARTBEAT_URL` | empty | where to POST after every finished check (see the watchdog) |
+| `RABBITMQ_MGMT_URL` | empty | RabbitMQ management API (e.g. `http://rabbitmq:15672`); set it to collect diagnostics on failures |
+| `RABBITMQ_USER` / `RABBITMQ_PASSWORD` / `RABBITMQ_VHOST` | `guest` / empty / `/` | management API credentials |
+| `RABBITMQ_QUEUES` | `errors/default,grouper,notifier,sender/webhook` | queues on the event path to report |
 
 Alerts: one message for every failed check, and one when the checks pass again after a failure. A failure to send an alert or to save the result is recorded in the result (`reporting_errors`) and never changes the verdict about Hawk.
+
+### Diagnostics on failure
+
+When a check fails and `RABBITMQ_MGMT_URL` is set, the monitor takes a snapshot of Hawk right after the failure: the collector health and, for each queue on the event path, how many messages wait and how many consumers listen. The snapshot is stored with the run (`diagnostics` in `GET /runs`) and summarised in the Telegram alert:
+
+```
+collector: ok
+queues: errors/default 0 msgs 1 consumer, grouper 0 msgs 1 consumer, notifier 0 msgs 1 consumer, sender/webhook 4 msgs 0 consumers!
+```
+
+The management API needs a user with the `monitoring` tag and no vhost permissions (`rabbitmqctl add_user ...; rabbitmqctl set_user_tags <user> monitoring`); the default `guest` user only works from localhost. A queue with no consumers is marked with `!`: that is the stuck stage. Without the variable the snapshot is skipped and nothing else changes. The result of the optional cleanup is exposed as `cleanup` in the same output.
 
 ## Observability and a watcher for the monitor itself
 
@@ -93,6 +107,8 @@ Two optional compose profiles:
 docker compose --profile observability up -d   # Prometheus :9090 and Grafana :3001 (anonymous viewer), dashboard "Hawk synthetic monitor" is provisioned
 docker compose --profile watchdog up -d        # watchdog :8090
 ```
+
+![Grafana dashboard](docs/grafana-dashboard.png)
 
 - **Metrics** (`/metrics`, prefix `hawk_monitor_`): runs by status, stage outcomes, stage duration and event latency histograms, timestamps of the last run and the last success. Labels come from fixed sets only; run ids and error texts are never labels.
 - **Heartbeat**: with `HEARTBEAT_URL` set, the monitor POSTs `{status, run_id, finished_at}` after **every finished check, failed ones too**, so a failing Hawk is not mistaken for a dead monitor. The `watchdog` service (`cmd/watchdog`) alerts Telegram when no ping arrives for `WATCHDOG_TIMEOUT` (default 25 m, must exceed the check interval) and once more when pings resume. A watchdog on the same Docker host does not notice that host dying: run it elsewhere for that (it is the same image with `entrypoint: watchdog`; it only needs `TELEGRAM_NOTIFY_URL`).

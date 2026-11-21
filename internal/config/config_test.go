@@ -56,3 +56,21 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRabbitQueues(t *testing.T) {
+	cfg, err := config.Load(env(map[string]string{"RABBITMQ_QUEUES": " a/b , ,c "}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RabbitQueues) != 2 || cfg.RabbitQueues[0] != "a/b" || cfg.RabbitQueues[1] != "c" || cfg.RabbitVhost != "/" {
+		t.Fatalf("unexpected rabbit config: %+v", cfg)
+	}
+
+	cfg, err = config.Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RabbitQueues) != 4 || cfg.RabbitURL != "" {
+		t.Fatalf("unexpected rabbit defaults: %+v", cfg)
+	}
+}

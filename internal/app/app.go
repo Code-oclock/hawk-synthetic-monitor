@@ -17,6 +17,7 @@ import (
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/hawk"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/heartbeat"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/metrics"
+	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/rabbitmq"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/sqlite"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/telegram"
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/adapter/webhook"
@@ -81,6 +82,16 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	if cfg.HeartbeatURL != "" {
 		deps.Heartbeat = heartbeat.New(cfg.HeartbeatURL, nil)
+	}
+
+	if cfg.RabbitURL != "" {
+		deps.Inspector = rabbitmq.New(rabbitmq.Config{
+			BaseURL:  cfg.RabbitURL,
+			User:     cfg.RabbitUser,
+			Password: cfg.RabbitPassword,
+			Vhost:    cfg.RabbitVhost,
+			Queues:   cfg.RabbitQueues,
+		}, nil)
 	}
 
 	check := usecase.NewCheck(deps, usecase.Options{
