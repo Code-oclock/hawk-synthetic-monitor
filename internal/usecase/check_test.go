@@ -617,6 +617,38 @@ func TestCheck_WebhookEarlyDelivery(t *testing.T) {
 	}
 }
 
+func TestCheck_WebhookAfterDeadlineIsLate(t *testing.T) {
+	env := newTestEnv(testOptions())
+
+	// The notification is already waiting, but it was received after the stage deadline.
+	env.hawk.sendFn = func(ctx context.Context, title string) error {
+		env.inbox.Deliver(entity.Delivery{
+			Key:        entity.DeliveryKey{ProjectID: "p1", Title: title},
+			EventID:    "e-late",
+			ReceivedAt: time.Now().Add(time.Hour),
+		})
+
+		return nil
+	}
+	env.hawk.findSuccessEvent = entity.Event{ID: "e-late"}
+
+	res, err := env.check.Run(context.Background(), entity.TriggerScheduled)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	webhook := findStage(res.Stages, entity.StageWebhook)
+	if webhook == nil || webhook.Status != entity.StatusFailed {
+		t.Fatalf("webhook stage = %v, want failed", webhook)
+	}
+	if webhook.Failure == nil || webhook.Failure.Code != "timeout" {
+		t.Fatalf("webhook failure = %v, want timeout", webhook.Failure)
+	}
+	if res.Delivery != nil {
+		t.Fatalf("late delivery must not be recorded, got %v", res.Delivery)
+	}
+}
+
 func TestCheck_SubscribeBeforeSend(t *testing.T) {
 	env := newTestEnv(testOptions())
 	ctx := context.Background()

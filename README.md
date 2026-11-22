@@ -26,11 +26,13 @@ What the result tells you:
 | `health` | collector, Redis or its MongoDB are down |
 | `send` | the collector rejected or did not answer (bad token 400, limit 402, 429, 5xx, network) |
 | `visible` | no event in the API in time: stuck somewhere in default/grouper/MongoDB, or the API is down |
-| `webhook` | the event is visible, but no notification arrived: notifier, `sender/webhook` worker, or the receiver is unreachable from Hawk |
+| `webhook` | no notification arrived in time (waited for in parallel with `visible`): notifier, `sender/webhook` worker, or the receiver is unreachable from Hawk |
 
 A timeout shows where the event stopped being observable. It does not by itself prove which worker is at fault.
 
-Known limits: the API is polled for the project's latest 20 events, so use a dedicated project (the default `bootstrap.sh` project is one) and not one that receives heavy traffic; a retried `send` after a lost answer may create a second event with the same title (Hawk groups them, so it does not trigger a second notification); the webhook receiver accepts any POST with the right project id and title, but the title contains a random run id that only Hawk and the monitor know.
+What is and is not checked: the notification path is verified up to Hawk's webhook delivery to the monitor, which proves the notifier and the `sender/webhook` worker. Hawk's own delivery to Telegram is not tested (the task calls it optional): a temporary Telegram outage must not hide a healthy pipeline, so Telegram here is only the channel for the monitor's alerts. The UI is not driven through a browser; the project page is checked through the same API the UI uses.
+
+Known limits: a recovery message that could not be sent is retried on the next run, but that pending flag lives in memory: if the monitor restarts before it succeeds, the "recovered" message is not sent; the API is polled for the project's latest 20 events, so use a dedicated project (the default `bootstrap.sh` project is one) and not one that receives heavy traffic; a retried `send` after a lost answer may create a second event with the same title (Hawk groups them, so it does not trigger a second notification); the webhook receiver accepts any POST with the right project id and title, but the title contains a random run id that only Hawk and the monitor know.
 
 ## Run it
 
@@ -76,12 +78,14 @@ Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRA
 | `MONITOR_HEALTH_TIMEOUT` / `MONITOR_SEND_TIMEOUT` | `10s` / `15s` | per stage |
 | `MONITOR_VISIBLE_TIMEOUT` / `MONITOR_WEBHOOK_TIMEOUT` | `30s` / `30s` | counted from sending |
 | `MONITOR_POLL_INTERVAL` | `500ms` | how often the API is polled for the event |
-| `MONITOR_MAX_ATTEMPTS` | `3` | attempts per stage for transient errors |
+| `MONITOR_MAX_ATTEMPTS` / `MONITOR_RETRY_BACKOFF` | `3` / `1s` | attempts per stage for transient errors, pause between them |
 | `MONITOR_CLEANUP` | `false` | delete the test event after a passed check |
 | `MONITOR_HTTP_ADDR` / `MONITOR_WEBHOOK_ADDR` | `:8080` / `:8085` | listen addresses |
 | `MONITOR_DB_PATH` | `monitor.db` (`/data/monitor.db` in Docker) | SQLite history |
 | `TELEGRAM_NOTIFY_URL` | empty | `@codex_bot` webhook URL (send `/notify_start` to the bot in a chat); empty disables alerts |
-| `HEARTBEAT_URL` | empty | where to POST after every finished check (see the watchdog) |
+| `HAWK_HEALTH_URL` | derived from the collector URL | collector health endpoint for the `health` stage |
+| `HEARTBEAT_URL` | empty | where to POST after every finished check (see the watchdog); with the compose watchdog use `http://watchdog:8090/ping` |
+| `WATCHDOG_TIMEOUT` / `WATCHDOG_CHECK_EVERY` / `WATCHDOG_ADDR` | `25m` / `30s` / `:8090` | settings of the `watchdog` service |
 | `RABBITMQ_MGMT_URL` | empty | RabbitMQ management API (e.g. `http://rabbitmq:15672`); set it to collect diagnostics on failures |
 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` / `RABBITMQ_VHOST` | `guest` / empty / `/` | management API credentials |
 | `RABBITMQ_QUEUES` | `errors/default,grouper,notifier,sender/webhook` | queues on the event path to report |
@@ -116,6 +120,7 @@ docker compose --profile watchdog up -d        # watchdog :8090
 
 - **Metrics** (`/metrics`, prefix `hawk_monitor_`): runs by status, stage outcomes, stage duration and event latency histograms, timestamps of the last run and the last success. Labels come from fixed sets only; run ids and error texts are never labels.
 - **Heartbeat**: with `HEARTBEAT_URL` set, the monitor POSTs `{status, run_id, finished_at}` after **every finished check, failed ones too**, so a failing Hawk is not mistaken for a dead monitor. The `watchdog` service (`cmd/watchdog`) alerts Telegram when no ping arrives for `WATCHDOG_TIMEOUT` (default 25 m, must exceed the check interval) and once more when pings resume. A watchdog on the same Docker host does not notice that host dying: run it elsewhere for that (it is the same image with `entrypoint: watchdog`; it only needs `TELEGRAM_NOTIFY_URL`).
+- To wire it: set `HEARTBEAT_URL=http://watchdog:8090/ping` and `TELEGRAM_NOTIFY_URL` in `.env`, then `docker compose --profile watchdog up -d` (this recreates the monitor with the new variable). Without `HEARTBEAT_URL` the monitor sends no pings and the watchdog would report it as silent.
 - To try it: stop the monitor (`docker compose stop monitor`) and wait for the timeout; start it again to get the recovery message.
 - `POST /run` has no authentication, so compose publishes the operations port on `127.0.0.1` only. Put a reverse proxy with authentication in front of it before exposing it.
 

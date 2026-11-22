@@ -266,10 +266,18 @@ func (c *Check) waitWebhook(
 ) entity.StageResult {
 	started := c.deps.Clock.Now()
 
-	stageCtx, cancel := context.WithDeadline(ctx, sentAt.Add(c.opts.WebhookTimeout))
+	deadline := sentAt.Add(c.opts.WebhookTimeout)
+
+	stageCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	delivery, err := waiter.Wait(stageCtx)
+	// A notification that sat in the inbox past the deadline (the send stage ate the budget)
+	// is still late: Wait hands it over even when the context has already expired.
+	if err == nil && delivery.ReceivedAt.After(deadline) {
+		err = fmt.Errorf("notification arrived after the deadline: %w", context.DeadlineExceeded)
+	}
+
 	result := c.finish(entity.StageWebhook, started, 1, err)
 	if result.Status == entity.StatusPassed {
 		latency := delivery.ReceivedAt.Sub(sentAt)
