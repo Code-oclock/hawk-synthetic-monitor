@@ -37,6 +37,7 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-}
       WATCHDOG_TIMEOUT: ${WATCHDOG_TIMEOUT:-25m}
+      WATCHDOG_CHECK_EVERY: ${WATCHDOG_CHECK_EVERY:-30s}
     ports:
       - "127.0.0.1:8090:8090"
 

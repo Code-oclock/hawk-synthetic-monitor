@@ -85,7 +85,7 @@ Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRA
 | `TELEGRAM_NOTIFY_URL` | empty | `@codex_bot` webhook URL (send `/notify_start` to the bot in a chat); empty disables alerts |
 | `HAWK_HEALTH_URL` | derived from the collector URL | collector health endpoint for the `health` stage |
 | `HEARTBEAT_URL` | empty | where to POST after every finished check (see the watchdog); with the compose watchdog use `http://watchdog:8090/ping` |
-| `WATCHDOG_TIMEOUT` / `WATCHDOG_CHECK_EVERY` / `WATCHDOG_ADDR` | `25m` / `30s` / `:8090` | settings of the `watchdog` service |
+| `WATCHDOG_TIMEOUT` / `WATCHDOG_CHECK_EVERY` | `25m` / `30s` | settings of the `watchdog` service (silence limit, how often it checks) |
 | `RABBITMQ_MGMT_URL` | empty | RabbitMQ management API (e.g. `http://rabbitmq:15672`); set it to collect diagnostics on failures |
 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` / `RABBITMQ_VHOST` | `guest` / empty / `/` | management API credentials |
 | `RABBITMQ_QUEUES` | `errors/default,grouper,notifier,sender/webhook` | queues on the event path to report |

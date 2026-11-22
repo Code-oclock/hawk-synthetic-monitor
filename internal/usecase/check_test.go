@@ -596,11 +596,17 @@ func TestCheck_WebhookEarlyDelivery(t *testing.T) {
 	env := newTestEnv(testOptions())
 	ctx := context.Background()
 
-	env.inbox.Deliver(entity.Delivery{
-		Key:        entity.DeliveryKey{ProjectID: "p1", Title: "synthetic-check run-1"},
-		EventID:    "e-early",
-		ReceivedAt: time.Now(),
-	})
+	// Hawk's webhook can arrive while the collector's answer is still on its way:
+	// the real inbox only knows the key after Subscribe, so deliver from inside send.
+	env.hawk.sendFn = func(ctx context.Context, title string) error {
+		env.inbox.Deliver(entity.Delivery{
+			Key:        entity.DeliveryKey{ProjectID: "p1", Title: title},
+			EventID:    "e-early",
+			ReceivedAt: time.Now(),
+		})
+
+		return nil
+	}
 	env.hawk.findSuccessEvent = entity.Event{ID: "e-early"}
 
 	res, err := env.check.Run(ctx, entity.TriggerScheduled)
