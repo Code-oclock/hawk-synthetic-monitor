@@ -104,7 +104,6 @@ func (c *Client) Health(ctx context.Context) error {
 	return nil
 }
 
-// postJSON sends body as JSON and returns the HTTP status and body bytes.
 func (c *Client) postJSON(ctx context.Context, url string, body any, bearer string) (status int, respBody []byte, err error) {
 	payload, err := json.Marshal(body)
 	if err != nil {

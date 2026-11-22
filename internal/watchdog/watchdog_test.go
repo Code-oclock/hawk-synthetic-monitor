@@ -235,7 +235,6 @@ func TestWatchdog_RecoveryMessageOnPing(t *testing.T) {
 		t.Errorf("got recovery %q, want '✅ Hawk monitor is back: heartbeat received'", msgs[1])
 	}
 
-	// Ping while healthy: no alert.
 	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ping", nil)
 	rr2 := httptest.NewRecorder()
 	handler.ServeHTTP(rr2, req2)
@@ -244,7 +243,6 @@ func TestWatchdog_RecoveryMessageOnPing(t *testing.T) {
 		t.Fatalf("subsequent healthy ping should not trigger alert, got: %v", rec.Messages())
 	}
 
-	// Check while healthy: no alert.
 	w.Check(context.Background())
 	if len(rec.Messages()) != 2 {
 		t.Fatalf("check while healthy should not trigger alert, got: %v", rec.Messages())

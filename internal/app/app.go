@@ -113,20 +113,28 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	hookMux.Handle("POST /webhook", inbox.Handler())
 
 	servers := []*http.Server{
-		{Addr: cfg.HTTPAddr, Handler: opsMux, ReadHeaderTimeout: 5 * time.Second},
-		{Addr: cfg.WebhookAddr, Handler: hookMux, ReadHeaderTimeout: 5 * time.Second},
+		{Addr: cfg.HTTPAddr, Handler: opsMux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second},
+		{Addr: cfg.WebhookAddr, Handler: hookMux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second},
 	}
 
-	errs := make(chan error, len(servers))
+	listeners := make([]net.Listener, 0, len(servers))
 	for _, srv := range servers {
 		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
 		if err != nil {
+			for _, l := range listeners {
+				_ = l.Close()
+			}
+
 			return fmt.Errorf("listen on %s: %w", srv.Addr, err)
 		}
 		log.Info("listening", "addr", listener.Addr().String())
+		listeners = append(listeners, listener)
+	}
 
+	errs := make(chan error, len(servers))
+	for i, srv := range servers {
 		go func() {
-			if err := srv.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+			if err := srv.Serve(listeners[i]); !errors.Is(err, http.ErrServerClosed) {
 				errs <- err
 			}
 		}()
@@ -156,7 +164,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	defer cancel()
 
 	for _, srv := range servers {
-		_ = srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("shutdown", "addr", srv.Addr, "error", err)
+		}
 	}
 
 	return runErr

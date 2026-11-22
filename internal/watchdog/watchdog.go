@@ -12,6 +12,7 @@ import (
 
 const (
 	backMessage = "✅ Hawk monitor is back: heartbeat received"
+	maxPingBody = 64 << 10
 )
 
 type Config struct {
@@ -54,7 +55,7 @@ func (w *Watchdog) Handler() http.Handler {
 
 func (w *Watchdog) handlePing(rw http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
-		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxPingBody))
 		_ = r.Body.Close()
 	}
 

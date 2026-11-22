@@ -56,7 +56,7 @@ func run(log *slog.Logger) error {
 	}
 
 	wd := watchdog.New(watchdog.Config{Timeout: timeout, CheckEvery: checkEvery}, send, nil)
-	srv := &http.Server{Addr: addr, Handler: wd.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: wd.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

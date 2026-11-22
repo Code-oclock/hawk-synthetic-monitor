@@ -329,7 +329,7 @@ func classify(err error) *entity.Failure {
 	return &entity.Failure{Code: code, Message: err.Error()}
 }
 
-// sleep waits for d or until ctx ends and reports whether the wait completed.
+// sleep reports whether d elapsed before ctx ended.
 func sleep(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

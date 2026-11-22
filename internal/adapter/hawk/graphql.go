@@ -30,7 +30,6 @@ func isUnauthenticated(err error) bool {
 	return errors.As(err, &gqlErr) && (gqlErr.code == codeUnauthenticated || gqlErr.code == codeTokenExpired)
 }
 
-// query runs a GraphQL query.
 func (c *Client) query(ctx context.Context, query string, vars map[string]any, bearer string, out any) error {
 	body := map[string]any{"query": query, "variables": vars}
 
