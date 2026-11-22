@@ -14,6 +14,20 @@ import (
 )
 
 func TestFindEvent_LogsInAgainWhenTokenExpired(t *testing.T) {
+	rejections := map[string]string{
+		"unauthenticated": `{"errors":[{"message":"jwt expired","extensions":{"code":"UNAUTHENTICATED"}}],"data":null}`,
+		"expired":         `{"errors":[{"message":"access expired, log in again","extensions":{"code":"ACCESS_TOKEN_EXPIRED_ERROR"}}],"data":null}`,
+	}
+	for name, rejection := range rejections {
+		t.Run(name, func(t *testing.T) {
+			testLogsInAgain(t, rejection)
+		})
+	}
+}
+
+func testLogsInAgain(t *testing.T, rejection string) {
+	t.Helper()
+
 	var logins atomic.Int32
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +45,7 @@ func TestFindEvent_LogsInAgainWhenTokenExpired(t *testing.T) {
 
 		// the first token is expired, the second one is accepted
 		if r.Header.Get("Authorization") != "Bearer tok-2" {
-			_, _ = w.Write([]byte(`{"errors":[{"message":"jwt expired","extensions":{"code":"UNAUTHENTICATED"}}],"data":null}`))
+			_, _ = w.Write([]byte(rejection))
 
 			return
 		}

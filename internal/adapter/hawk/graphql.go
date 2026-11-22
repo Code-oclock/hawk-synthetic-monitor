@@ -10,7 +10,10 @@ import (
 	"github.com/Code-oclock/hawk-synthetic-monitor/internal/usecase"
 )
 
-const codeUnauthenticated = "UNAUTHENTICATED"
+const (
+	codeUnauthenticated = "UNAUTHENTICATED"
+	codeTokenExpired    = "ACCESS_TOKEN_EXPIRED_ERROR"
+)
 
 type graphQLError struct {
 	message string
@@ -24,7 +27,7 @@ func (e *graphQLError) Error() string {
 func isUnauthenticated(err error) bool {
 	var gqlErr *graphQLError
 
-	return errors.As(err, &gqlErr) && gqlErr.code == codeUnauthenticated
+	return errors.As(err, &gqlErr) && (gqlErr.code == codeUnauthenticated || gqlErr.code == codeTokenExpired)
 }
 
 // query runs a GraphQL query.
