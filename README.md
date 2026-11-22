@@ -97,7 +97,9 @@ collector: ok
 queues: errors/default 0 msgs 1 consumer, grouper 0 msgs 1 consumer, notifier 0 msgs 1 consumer, sender/webhook 4 msgs 0 consumers!
 ```
 
-The management API needs a user with the `monitoring` tag and no vhost permissions (`rabbitmqctl add_user ...; rabbitmqctl set_user_tags <user> monitoring`); the default `guest` user only works from localhost. A queue with no consumers is marked with `!`: that is the stuck stage. Without the variable the snapshot is skipped and nothing else changes. The result of the optional cleanup is exposed as `cleanup` in the same output.
+The management API needs a user with the `monitoring` tag and no vhost permissions (`rabbitmqctl add_user ...; rabbitmqctl set_user_tags <user> monitoring`); the default `guest` user only works from localhost. A queue with no consumers is marked with `!`: that is the stuck stage. ![Telegram alert](docs/telegram-alert.png)
+
+Without the variable the snapshot is skipped and nothing else changes. The result of the optional cleanup is exposed as `cleanup` in the same output.
 
 ## Observability and a watcher for the monitor itself
 
