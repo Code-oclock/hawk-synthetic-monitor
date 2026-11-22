@@ -1,42 +1,10 @@
 # hawk-synthetic-monitor
 
-Synthetic monitoring for [Hawk](https://hawk.so). On a fixed interval the service sends a test event and checks that it makes it through the whole pipeline: collector, processing, the project view in the API, and the notification Hawk delivers through a webhook. Every stage is timed. When a check fails, the service says which stage failed and alerts a Telegram chat.
+Synthetic monitoring for [Hawk](https://hawk.so). Periodically sends a test event through the pipeline (collector, processing, API view, webhook delivery), times each stage, identifies the failing component, and alerts via Telegram.
 
-Test assignment for the CodeX club (Developer Infrastructure, Synthetic Monitoring).
+## Quick start
 
-## What one check does
-
-```
-health   GET  collector /health               redis and mongo reported healthy
-send     POST collector /                     event with a unique title, accepted (HTTP 200, error:false)
-visible  POST API /graphql                    the event with that title shows up in the project's events
-webhook  POST <monitor>/webhook (from Hawk)   Hawk's notifier delivers the event to our receiver
-```
-
-- `visible` and `webhook` run in parallel after `send`; each has its own deadline counted from the moment of sending, so a failed webhook does not hide that the event was processed (and the other way round).
-- The webhook receiver is subscribed **before** the event is sent, so a very fast notification is never lost.
-- If `health` or `send` fails, the later stages are recorded as `skipped` with a reason.
-- Each stage records status, duration, attempts and a failure code (`timeout`, `unavailable`, `not_found`, `error`). Temporary network failures, 5xx and 429 are retried within the stage budget.
-- Only one check runs at a time. A tick that finds a run still active is skipped; a manual `POST /run` gets `409`.
-
-What the result tells you:
-
-| Failed stage | Meaning |
-|---|---|
-| `health` | collector, Redis or its MongoDB are down |
-| `send` | the collector rejected or did not answer (bad token 400, limit 402, 429, 5xx, network) |
-| `visible` | no event in the API in time: stuck somewhere in default/grouper/MongoDB, or the API is down |
-| `webhook` | no notification arrived in time (waited for in parallel with `visible`): notifier, `sender/webhook` worker, or the receiver is unreachable from Hawk |
-
-A timeout shows where the event stopped being observable. It does not by itself prove which worker is at fault.
-
-What is and is not checked: the notification path is verified up to Hawk's webhook delivery to the monitor, which proves the notifier and the `sender/webhook` worker. Hawk's own delivery to Telegram is not tested (the task calls it optional): a temporary Telegram outage must not hide a healthy pipeline, so Telegram here is only the channel for the monitor's alerts. The UI is not driven through a browser; the project page is checked through the same API the UI uses.
-
-Known limits: a recovery message that could not be sent is retried on the next run, but that pending flag lives in memory: if the monitor restarts before it succeeds, the "recovered" message is not sent; the API is polled for the project's latest 20 events, so use a dedicated project (the default `bootstrap.sh` project is one) and not one that receives heavy traffic; a retried `send` after a lost answer may create a second event with the same title (Hawk groups them, so it does not trigger a second notification); the webhook receiver accepts any POST with the right project id and title, but the title contains a random run id that only Hawk and the monitor know.
-
-## Run it
-
-You need a running Hawk (collector, API, and the `default`, `grouper`, `notifier` and `webhook` workers) and a project in it. The service never creates accounts or projects itself; `scripts/bootstrap.sh` does that once.
+Requires a running Hawk instance (collector, API, workers: `default`, `grouper`, `notifier`, `webhook`) and a project. The service does not create accounts or projects; `scripts/bootstrap.sh` handles initial setup.
 
 ```sh
 # 1. Prepare a project and an env file (local Hawk with the API in NODE_ENV=e2e, see "Hawk setup")
@@ -56,7 +24,7 @@ curl localhost:8080/metrics              # Prometheus
 
 Without Docker: `go run ./cmd/monitor` with the same variables exported (see `.env.example`).
 
-### Endpoints
+## API
 
 | Path | Port | Purpose |
 |---|---|---|
@@ -67,9 +35,11 @@ Without Docker: `go run ./cmd/monitor` with the same variables exported (see `.e
 | `GET /metrics` | 8080 | Prometheus metrics, prefix `hawk_monitor_` |
 | `POST /webhook` | 8085 | receiver for Hawk's webhook notifications |
 
-### Configuration
+Only one check runs at a time. Concurrent scheduled ticks are skipped; `POST /run` returns `409`.
 
-Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRATION_TOKEN`, `HAWK_EMAIL`, `HAWK_PASSWORD`. Everything else is optional; defaults are in `.env.example`:
+## Configuration
+
+Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRATION_TOKEN`, `HAWK_EMAIL`, `HAWK_PASSWORD`. Defaults are in `.env.example`:
 
 | Variable | Default | |
 |---|---|---|
@@ -90,60 +60,43 @@ Required: `HAWK_COLLECTOR_URL`, `HAWK_API_URL`, `HAWK_PROJECT_ID`, `HAWK_INTEGRA
 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` / `RABBITMQ_VHOST` | `guest` / empty / `/` | management API credentials |
 | `RABBITMQ_QUEUES` | `errors/default,grouper,notifier,sender/webhook` | queues on the event path to report |
 
-Alerts: one message for every failed check, and one when the checks pass again after a failure. A failure to send an alert or to save the result is recorded in the result (`reporting_errors`) and never changes the verdict about Hawk.
+### Hawk setup
 
-### Diagnostics on failure
+Prerequisites:
+1. Project, integration token, and API credentials (email/password; access tokens live 15 minutes, the client logs in again on its own).
+2. Notification rule: `ONLY_NEW`, channel `webhook`, pointing to `/webhook` on port 8085.
+3. Network reachability between monitor and Hawk.
 
-When a check fails and `RABBITMQ_MGMT_URL` is set, the monitor takes a snapshot of Hawk right after the failure: the collector health and, for each queue on the event path, how many messages wait and how many consumers listen. The snapshot is stored with the run (`diagnostics` in `GET /runs`) and summarised in the Telegram alert:
+Rule modes (`scripts/bootstrap.sh`, `WEBHOOK_MODE`):
+- `api`: GraphQL (`createProjectNotificationsRule`), requires public HTTP(S) URL on port 80 or 443.
+- `mongo`: direct MongoDB update, allowing private IPs (`http://host.docker.internal:8085/webhook`).
+
+`bootstrap.sh` is idempotent. `signUp` returns credentials only with `NODE_ENV=e2e`; otherwise create user and project manually. Collector caches tokens up to 30 s; notifier caches rules up to 60 s.
+
+## How it works
+
+### Pipeline
 
 ```
-collector: ok
-queues: errors/default 0 msgs 1 consumer, grouper 0 msgs 1 consumer, notifier 0 msgs 1 consumer, sender/webhook 4 msgs 0 consumers!
+health   GET  collector /health               redis and mongo reported healthy
+send     POST collector /                     event with a unique title, accepted (HTTP 200, error:false)
+visible  POST API /graphql                    the event with that title shows up in the project's events
+webhook  POST <monitor>/webhook (from Hawk)   Hawk's notifier delivers the event to our receiver
 ```
 
-The management API needs a user with the `monitoring` tag and no vhost permissions (`rabbitmqctl add_user ...; rabbitmqctl set_user_tags <user> monitoring`); the default `guest` user only works from localhost. A queue with no consumers is marked with `!`: that is the stuck stage.
+- `visible` and `webhook` run in parallel after `send`, each with its own deadline from event dispatch.
+- Webhook receiver subscribes before `send` so early notifications are not missed.
+- If `health` or `send` fails, subsequent stages are marked as `skipped`.
+- Stages retry transient errors (5xx, 429, network) within stage budget, recording duration, attempts, and failure code (`timeout`, `unavailable`, `not_found`, `error`).
 
-![Telegram alert](docs/telegram-alert.png)
+| Failed stage | Meaning |
+|---|---|
+| `health` | collector, Redis or its MongoDB are down |
+| `send` | the collector rejected or did not answer (bad token 400, limit 402, 429, 5xx, network) |
+| `visible` | no event in the API in time: stuck somewhere in default/grouper/MongoDB, or the API is down |
+| `webhook` | no notification arrived in time (waited for in parallel with `visible`): notifier, `sender/webhook` worker, or the receiver is unreachable from Hawk |
 
-Without the variable the snapshot is skipped and nothing else changes. The result of the optional cleanup is exposed as `cleanup` in the same output.
-
-## Observability and a watcher for the monitor itself
-
-Two optional compose profiles:
-
-```sh
-docker compose --profile observability up -d   # Prometheus :9090 and Grafana :3001 (anonymous viewer), dashboard "Hawk synthetic monitor" is provisioned
-docker compose --profile watchdog up -d        # watchdog :8090
-```
-
-![Grafana dashboard](docs/grafana-dashboard.png)
-
-- **Metrics** (`/metrics`, prefix `hawk_monitor_`): runs by status, stage outcomes, stage duration and event latency histograms, timestamps of the last run and the last success. Labels come from fixed sets only; run ids and error texts are never labels.
-- **Heartbeat**: with `HEARTBEAT_URL` set, the monitor POSTs `{status, run_id, finished_at}` after **every finished check, failed ones too**, so a failing Hawk is not mistaken for a dead monitor. The `watchdog` service (`cmd/watchdog`) alerts Telegram when no ping arrives for `WATCHDOG_TIMEOUT` (default 25 m, must exceed the check interval) and once more when pings resume. A watchdog on the same Docker host does not notice that host dying: run it elsewhere for that (it is the same image with `entrypoint: watchdog`; it only needs `TELEGRAM_NOTIFY_URL`).
-- To wire it: set `HEARTBEAT_URL=http://watchdog:8090/ping` and `TELEGRAM_NOTIFY_URL` in `.env`, then `docker compose --profile watchdog up -d` (this recreates the monitor with the new variable). Without `HEARTBEAT_URL` the monitor sends no pings and the watchdog would report it as silent.
-- To try it: stop the monitor (`docker compose stop monitor`) and wait for the timeout; start it again to get the recovery message.
-- `POST /run` has no authentication, so compose publishes the operations port on `127.0.0.1` only. Put a reverse proxy with authentication in front of it before exposing it.
-
-## Hawk setup
-
-What the monitor needs from Hawk:
-
-1. A project and its integration token, plus a user that can read the project through the API (login and password; access tokens live 15 minutes and the client logs in again on its own).
-2. A notification rule on that project: `ONLY_NEW`, channel `webhook`, pointing at the monitor's `/webhook`.
-3. Reachability: the monitor must reach the collector and the API; Hawk's webhook worker must reach the monitor's `:8085`.
-
-Two ways to create the webhook rule (`scripts/bootstrap.sh`, `WEBHOOK_MODE`):
-
-- `api`: through the API (`createProjectNotificationsRule`). Hawk validates the URL on save: it must be a public http(s) address on port 80 or 443 (no localhost or private IPs). Use this against a Hawk that can reach a public monitor, for example behind a reverse proxy.
-- `mongo` (local Hawk): the rule is written straight into the project document in MongoDB, because the API refuses private addresses. The delivery worker does not re-check the address, so `http://host.docker.internal:8085/webhook` works.
-
-`bootstrap.sh` is idempotent: with an existing env file it reuses the project and only makes sure the rule exists. `signUp` returns the password only when the Hawk API runs with `NODE_ENV=e2e`; against another Hawk create the user and project by hand and fill in the env file.
-
-Timing facts worth knowing (all measured on a local Hawk): the collector accepts a new project token only after its cache refreshes (up to 30 s; the script waits for it) and the notifier caches a project's rules for up to 60 s, so create the rule well before the first check.
-
-## Architecture
-
-Clean architecture in its light Go form: dependencies point inward, and the use case talks to the outside world only through small interfaces that it declares itself.
+### Architecture
 
 ```
 cmd/monitor            entry point: config -> app.Run
@@ -167,9 +120,46 @@ internal/
   app/                 composition root: builds adapters, injects them, runs servers
 ```
 
-The use case never imports an adapter, so the scenario is tested with fakes and no network (`internal/usecase/check_test.go` covers early webhooks, partial failures, retries, cancellation, busy runs, alerts and recovery). Adapters are tested against `httptest` servers.
+Usecases depend only on interfaces declared in `internal/usecase/`, tested with fakes and no network (`internal/usecase/check_test.go`). Adapters use `httptest` servers.
 
-## Development
+## Diagnostics and observability
+
+When `RABBITMQ_MGMT_URL` is set, failures capture collector health and queue stats (`errors/default`, `grouper`, `notifier`, `sender/webhook`), stored in `GET /runs` (`diagnostics`) and sent to Telegram (`!` indicates 0 consumers):
+
+```
+collector: ok
+queues: errors/default 0 msgs 1 consumer, grouper 0 msgs 1 consumer, notifier 0 msgs 1 consumer, sender/webhook 4 msgs 0 consumers!
+```
+
+Requires a user with `monitoring` tag: `rabbitmqctl add_user ...; rabbitmqctl set_user_tags <user> monitoring` (`guest` only works from localhost). When unset, snapshot is skipped. Cleanup result is in `cleanup`.
+
+![Telegram alert](docs/telegram-alert.png)
+
+### Observability and watchdog
+
+```sh
+docker compose --profile observability up -d   # Prometheus :9090 and Grafana :3001 (anonymous viewer), dashboard "Hawk synthetic monitor" is provisioned
+docker compose --profile watchdog up -d        # watchdog :8090
+```
+
+![Grafana dashboard](docs/grafana-dashboard.png)
+
+- **Metrics** (`/metrics`, prefix `hawk_monitor_`): runs by status, stage outcomes, duration, event latencies, and last run/success timestamps (fixed label sets).
+- **Heartbeat & watchdog**: with `HEARTBEAT_URL` set, monitor POSTs `{status, run_id, finished_at}` after every finished check. `watchdog` (`cmd/watchdog`) alerts Telegram if no ping arrives within `WATCHDOG_TIMEOUT` (default 25 m) and on recovery.
+- Wiring: set `HEARTBEAT_URL=http://watchdog:8090/ping` and `TELEGRAM_NOTIFY_URL` in `.env`, then run `docker compose --profile watchdog up -d`. Test: stop monitor (`docker compose stop monitor`), wait for timeout, then restart.
+
+## Operations and limitations
+
+- **Scope**: verifies pipeline up to Hawk's webhook delivery (covers notifier and `sender/webhook`). Hawk delivery to Telegram is not tested; Telegram is used solely for monitor alerts. UI is tested via GraphQL API, not a browser.
+- **Failures**: a timeout shows where the event stopped being observable, not which worker failed.
+- **Alerts**: sends one alert on failure and one on recovery. Pending recovery flag is in-memory (lost on restart before delivery). Alert or storage failures are logged in `reporting_errors` and do not alter the check verdict.
+- **Polling**: queries latest 20 events via GraphQL; use a dedicated low-traffic project.
+- **Duplicates**: retrying `send` on lost response may create duplicate events in Hawk (grouped by title, no duplicate notification).
+- **Webhook security**: receiver matches project ID and random run ID from event title.
+- **API security**: `POST /run` has no authentication; compose binds port 8080 to `127.0.0.1`. Use a reverse proxy with authentication before exposing.
+- **Watchdog deployment**: collocated watchdog cannot detect host failure; run on a separate host (`entrypoint: watchdog`, requires `TELEGRAM_NOTIFY_URL`).
+
+### Development
 
 ```sh
 make check   # format check, golangci-lint, go test -race
